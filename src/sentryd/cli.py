@@ -229,6 +229,28 @@ def alerts_show(
 
 
 @app.command()
+def dash(
+    db: Path = DbOption,
+    pcap: Optional[Path] = typer.Option(
+        None, "--pcap", help="Replay this capture live in the dashboard (timed playback)."
+    ),
+    config: Optional[Path] = ConfigOption,
+    speed: float = typer.Option(
+        1.0, "--speed", help="Playback speed multiplier for --pcap (0 = as fast as possible)."
+    ),
+) -> None:
+    """Terminal dashboard: live alert table with drill-down detail view.
+
+    Without --pcap it browses the alert store (and picks up new alerts as
+    they land); with --pcap it replays the capture paced by packet
+    timestamps — ideal for a screen-recorded demo.
+    """
+    from sentryd.dashboard.app import DashboardApp
+
+    DashboardApp(db_path=db, pcap=pcap, config_path=config, speed=speed).run()
+
+
+@app.command()
 def triage(
     alert_id: int = typer.Argument(..., help="Alert id to triage (see `alerts list`)."),
     db: Path = DbOption,
