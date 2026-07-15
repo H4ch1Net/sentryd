@@ -12,7 +12,7 @@ import random
 from pathlib import Path
 
 from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.l2 import Ether
+from scapy.layers.l2 import ARP, Ether
 from scapy.utils import wrpcap
 
 HERE = Path(__file__).parent
@@ -42,6 +42,14 @@ def browsing(client: str, ts: float, dport: int = 443) -> list:
         pkt_tcp(server, client, sport, ts + 0.35, dport, "PA"),
         pkt_tcp(client, server, dport, ts + 1.50, sport, "FA"),
     ]
+
+
+def pkt_arp_reply(sender_ip, sender_mac, target_ip, target_mac, ts):
+    p = Ether(src=sender_mac, dst=target_mac) / ARP(
+        op=2, hwsrc=sender_mac, psrc=sender_ip, hwdst=target_mac, pdst=target_ip
+    )
+    p.time = ts
+    return p
 
 
 def main() -> None:
@@ -81,6 +89,29 @@ def main() -> None:
         ts += 5.0
     wrpcap(str(HERE / "benign.pcap"), packets)
     print(f"benign.pcap: {len(packets)} packets")
+
+    # -- arpspoof.pcap: gateway impersonation mid-browsing --------------------
+    gateway_ip = "192.168.1.1"
+    gateway_mac = "52:54:00:aa:00:01"
+    attacker_mac = "52:54:00:ee:66:66"
+    victim_mac = "52:54:00:bb:00:20"
+
+    packets = []
+    ts = START
+    for i in range(4):  # normal ARP refreshes from the real gateway
+        packets += browsing("192.168.1.20", ts)
+        packets.append(
+            pkt_arp_reply(gateway_ip, gateway_mac, "192.168.1.20", victim_mac, ts + 0.002)
+        )
+        ts += 10.0
+    # attacker claims the gateway IP, then keeps re-poisoning the cache
+    for i in range(6):
+        packets.append(
+            pkt_arp_reply(gateway_ip, attacker_mac, "192.168.1.20", victim_mac, ts + i * 2.0)
+        )
+    packets.sort(key=lambda p: p.time)
+    wrpcap(str(HERE / "arpspoof.pcap"), packets)
+    print(f"arpspoof.pcap: {len(packets)} packets")
 
 
 if __name__ == "__main__":

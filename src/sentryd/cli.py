@@ -19,6 +19,8 @@ from sentryd.core.alerts import Alert, Severity
 from sentryd.core.engine import RuleEngine
 from sentryd.rules.base import build_rules
 from sentryd.sources.base import SourceError
+from sentryd.sources.live import LiveCaptureSource
+from sentryd.sources.logtail import LogTailSource
 from sentryd.sources.pcap import PcapFileSource
 from sentryd.storage.store import DEFAULT_DB_PATH, AlertStore
 from sentryd.triage.base import NullTriage, TriageProvider, create_provider
@@ -106,24 +108,26 @@ class CollectorSink:
         pass
 
 
-@app.command()
-def replay(
-    pcap: Path = typer.Argument(..., help="pcap/pcapng file to replay."),
-    db: Path = DbOption,
-    config: Optional[Path] = ConfigOption,
-    triage: bool = typer.Option(
-        False, "--triage", help="Generate AI writeups for detected alerts afterwards."
-    ),
-) -> None:
-    """Replay a capture file through the detection engine (primary demo mode)."""
+def _run_detection(source, banner: str, db: Path, config: Optional[Path], triage: bool) -> None:
+    """Shared pipeline runner for replay/sniff/tail.
+
+    Runs the engine over the source (Ctrl-C stops cleanly for endless
+    sources), prints the summary, and — only after detection has finished —
+    optionally sends the collected alerts for AI triage.
+    """
     store = AlertStore(db)
     collector = CollectorSink()
     engine = _build_engine(config, store)
     engine.sinks.append(collector)
-    console.print(f"[bold]sentryd[/bold] v{__version__} — replaying [cyan]{pcap}[/cyan]")
+    console.print(f"[bold]sentryd[/bold] v{__version__} — {banner}")
     console.print(f"rules: {', '.join(r.rule_id for r in engine.rules)}\n")
     try:
-        stats = engine.run(PcapFileSource(pcap).events())
+        try:
+            stats = engine.run(source.events())
+        except KeyboardInterrupt:
+            engine.flush()
+            stats = engine.stats
+            console.print("\n[dim]stopped[/dim]")
         if triage and collector.alerts:
             console.print()
             _triage_alerts(store, collector.alerts)
@@ -144,6 +148,69 @@ def replay(
             style = SEVERITY_STYLE[sev]
             console.print(f"  [{style}]{sev.value}[/{style}]: {n}")
     console.print(f"alerts stored in [cyan]{db}[/cyan] — inspect with `sentryd alerts list`")
+
+
+TriageFlag = typer.Option(
+    False, "--triage", help="Generate AI writeups for detected alerts afterwards."
+)
+
+
+@app.command()
+def replay(
+    pcap: Path = typer.Argument(..., help="pcap/pcapng file to replay."),
+    db: Path = DbOption,
+    config: Optional[Path] = ConfigOption,
+    triage: bool = TriageFlag,
+) -> None:
+    """Replay a capture file through the detection engine (primary demo mode)."""
+    _run_detection(PcapFileSource(pcap), f"replaying [cyan]{pcap}[/cyan]", db, config, triage)
+
+
+@app.command()
+def sniff(
+    interface: Optional[str] = typer.Option(
+        None, "--interface", "-i", help="Interface to capture on (default: scapy's default)."
+    ),
+    bpf: Optional[str] = typer.Option(
+        None, "--filter", help='BPF capture filter, e.g. "tcp or arp".'
+    ),
+    db: Path = DbOption,
+    config: Optional[Path] = ConfigOption,
+    triage: bool = TriageFlag,
+) -> None:
+    """Live capture (requires root). Ctrl-C stops and prints the summary.
+
+    With --triage, AI writeups are generated after capture stops — triage
+    never runs in the packet path.
+    """
+    source = LiveCaptureSource(interface=interface, bpf_filter=bpf)
+    where = interface or "default interface"
+    _run_detection(source, f"sniffing [cyan]{where}[/cyan] (Ctrl-C to stop)", db, config, triage)
+
+
+@app.command()
+def tail(
+    logfile: Path = typer.Argument(..., help="JSON-lines traffic log to follow."),
+    from_start: bool = typer.Option(
+        True,
+        "--from-start/--new-only",
+        help="Process existing lines first, or only lines appended from now on.",
+    ),
+    follow: bool = typer.Option(
+        True, "--follow/--no-follow", help="Keep watching for new lines (Ctrl-C to stop)."
+    ),
+    db: Path = DbOption,
+    config: Optional[Path] = ConfigOption,
+    triage: bool = TriageFlag,
+) -> None:
+    """Stream a JSON-lines traffic log through the detection engine.
+
+    Line format: one JSON object per line with ts, protocol, src_ip, dst_ip,
+    src_port, dst_port, tcp_flags, length (all optional but the more the
+    rules can see, the more they can do).
+    """
+    source = LogTailSource(logfile, follow=follow, from_start=from_start)
+    _run_detection(source, f"tailing [cyan]{logfile}[/cyan]", db, config, triage)
 
 
 @alerts_app.command("list")
