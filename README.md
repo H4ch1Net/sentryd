@@ -69,7 +69,9 @@ alerts appear as they "happened"; Enter drills into any alert, q quits):
 uv run sentryd dash --pcap tests/fixtures/arpspoof.pcap --speed 4
 ```
 
-Or in the browser:
+Or in the browser — a light/dark themed console with KPI tiles, an
+alert-activity timeline, per-rule breakdown, a filterable alert table, and a
+slide-over detail drawer with raw evidence and the AI writeup:
 
 ```bash
 uv run sentryd web            # then open http://127.0.0.1:8000

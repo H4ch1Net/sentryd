@@ -73,6 +73,30 @@ def test_stats(client):
     assert stats["total"] == 2
     assert stats["by_severity"] == {"high": 1, "medium": 1}
     assert stats["by_rule"] == {"port_scan": 1, "suspicious_port": 1}
+    assert stats["sources"] == 2  # 10.0.0.66 and 10.0.0.7
+    assert stats["triaged"] == 1  # only "telnet B" has an ai_summary
+
+
+def test_timeline(client):
+    data = client.get("/api/timeline?buckets=10").json()
+    assert data["start"] == 1000.0
+    assert data["end"] == 2000.0
+    assert len(data["buckets"]) == 10
+    assert sum(b["count"] for b in data["buckets"]) == 2
+    # first alert (high) lands in the first bucket, second (medium) in the last
+    assert data["buckets"][0]["by_severity"] == {"high": 1}
+    assert data["buckets"][-1]["by_severity"] == {"medium": 1}
+
+
+def test_timeline_empty_store(tmp_path):
+    empty = TestClient(create_app(tmp_path / "empty.db"))
+    data = empty.get("/api/timeline").json()
+    assert data == {"start": None, "end": None, "buckets": []}
+
+
+def test_timeline_bucket_bounds_validated(client):
+    assert client.get("/api/timeline?buckets=0").status_code == 422
+    assert client.get("/api/timeline?buckets=9999").status_code == 422
 
 
 def test_frontend_served(client):

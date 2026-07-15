@@ -146,7 +146,44 @@ class AlertStore:
                 "SELECT rule_id, COUNT(*) AS n FROM alerts GROUP BY rule_id"
             )
         }
-        return {"total": total, "by_severity": by_severity, "by_rule": by_rule}
+        sources = self._conn.execute(
+            "SELECT COUNT(DISTINCT src) AS n FROM alerts WHERE src IS NOT NULL"
+        ).fetchone()["n"]
+        triaged = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM alerts WHERE ai_summary IS NOT NULL"
+        ).fetchone()["n"]
+        return {
+            "total": total,
+            "by_severity": by_severity,
+            "by_rule": by_rule,
+            "sources": sources,
+            "triaged": triaged,
+        }
+
+    def timeline(self, buckets: int = 30) -> dict:
+        """Alert counts bucketed over the stored alerts' event-time span.
+
+        Buckets span [min ts, max ts] of what's stored rather than wall-clock
+        "last N hours" — replayed captures carry their own timeline.
+        """
+        row = self._conn.execute(
+            "SELECT MIN(ts) AS lo, MAX(ts) AS hi, COUNT(*) AS n FROM alerts"
+        ).fetchone()
+        if not row["n"]:
+            return {"start": None, "end": None, "buckets": []}
+        lo, hi = row["lo"], row["hi"]
+        width = max((hi - lo) / buckets, 1e-9)
+        out = [
+            {"start": lo + i * width, "end": lo + (i + 1) * width, "count": 0, "by_severity": {}}
+            for i in range(buckets)
+        ]
+        for alert in self._conn.execute("SELECT ts, severity FROM alerts"):
+            bucket = out[min(int((alert["ts"] - lo) / width), buckets - 1)]
+            bucket["count"] += 1
+            bucket["by_severity"][alert["severity"]] = (
+                bucket["by_severity"].get(alert["severity"], 0) + 1
+            )
+        return {"start": lo, "end": hi, "buckets": out}
 
     def close(self) -> None:
         self._conn.close()

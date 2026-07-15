@@ -49,5 +49,9 @@ def create_app(db_path: Path) -> FastAPI:
     def stats() -> dict:
         return with_store(lambda s: s.stats())
 
+    @app.get("/api/timeline")
+    def timeline(buckets: int = Query(30, ge=4, le=120)) -> dict:
+        return with_store(lambda s: s.timeline(buckets))
+
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

@@ -3,50 +3,132 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>sentryd — alerts</title>
+  <title>sentryd — alert console</title>
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Apply the saved theme before first paint to avoid a flash.
+    const saved = localStorage.getItem("sentryd-theme");
+    if (saved) document.documentElement.dataset.theme = saved;
+  </script>
 </head>
 <body>
-  <header>
-    <h1>sentryd</h1>
-    <span class="tagline">rules detect &middot; AI explains</span>
-    <div id="stats" class="stats"></div>
+  <header class="appbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2 L21 6 V12 C21 17.5 17.2 21 12 22.5 C6.8 21 3 17.5 3 12 V6 Z"
+              fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+        <path d="M12 12 L16.2 8.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">sentryd</span>
+        <span class="brand-sub">network anomaly detection</span>
+      </div>
+    </div>
+    <div class="appbar-actions">
+      <span id="updated" class="updated" aria-live="polite"></span>
+      <label class="toggle">
+        <input type="checkbox" id="auto-refresh" checked>
+        <span>Live</span>
+      </label>
+      <button id="theme-toggle" class="icon-btn" aria-label="Toggle color theme" title="Toggle theme">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M12 3 a9 9 0 1 0 0 18 a9 9 0 0 0 0 -18 Z M12 5 v14 a7 7 0 0 0 0 -14 Z" fill="currentColor"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <main>
-    <section class="list-pane">
-      <div class="filters">
-        <select id="filter-severity">
-          <option value="">all severities</option>
-          <option value="critical">critical</option>
-          <option value="high">high</option>
-          <option value="medium">medium</option>
-          <option value="low">low</option>
-        </select>
-        <select id="filter-rule"><option value="">all rules</option></select>
-        <select id="filter-status">
-          <option value="">any status</option>
-          <option value="new">new</option>
-          <option value="triaged">triaged</option>
-          <option value="dismissed">dismissed</option>
-        </select>
-        <label class="auto"><input type="checkbox" id="auto-refresh" checked> auto-refresh</label>
+    <section class="kpis" aria-label="Summary">
+      <div class="tile">
+        <span class="tile-label">Total alerts</span>
+        <span class="tile-value" id="kpi-total">–</span>
+        <span class="tile-hint" id="kpi-total-hint"></span>
       </div>
-      <table id="alert-table">
-        <thead>
-          <tr><th>id</th><th>time (UTC)</th><th>severity</th><th>rule</th>
-              <th>src</th><th>dst</th><th>count</th><th>title</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p id="empty" class="empty" hidden>no alerts match the current filters</p>
+      <div class="tile">
+        <span class="tile-label">High &amp; critical</span>
+        <span class="tile-value" id="kpi-severe">–</span>
+        <span class="tile-hint" id="kpi-severe-hint"></span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">Sources observed</span>
+        <span class="tile-value" id="kpi-sources">–</span>
+        <span class="tile-hint">distinct offending hosts</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">AI triaged</span>
+        <span class="tile-value" id="kpi-triaged">–</span>
+        <span class="tile-hint" id="kpi-triaged-hint"></span>
+      </div>
     </section>
 
-    <aside id="detail" class="detail-pane" hidden>
-      <button id="detail-close" title="close">&times;</button>
-      <div id="detail-body"></div>
-    </aside>
+    <section class="charts">
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2>Alert activity</h2>
+          <span class="card-note">event time</span>
+        </div>
+        <div id="timeline" class="timeline" role="img" aria-label="Alert counts over time"></div>
+        <div id="timeline-axis" class="timeline-axis"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2>Alerts by rule</h2>
+        </div>
+        <div id="by-rule" class="rule-bars"></div>
+      </div>
+    </section>
+
+    <section class="card table-card">
+      <div class="card-head table-head">
+        <h2>Alerts</h2>
+        <div class="filters">
+          <input type="search" id="filter-search" placeholder="Filter by host or title…" aria-label="Search alerts">
+          <select id="filter-severity" aria-label="Filter by severity">
+            <option value="">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <select id="filter-rule" aria-label="Filter by rule"><option value="">All rules</option></select>
+          <select id="filter-status" aria-label="Filter by status">
+            <option value="">Any status</option>
+            <option value="new">New</option>
+            <option value="triaged">Triaged</option>
+            <option value="dismissed">Dismissed</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="alert-table">
+          <thead>
+            <tr>
+              <th class="num">ID</th><th>Time (UTC)</th><th>Severity</th><th>Rule</th>
+              <th>Source</th><th>Target</th><th class="num">Count</th><th>Title</th><th>AI</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="empty" class="empty" hidden>
+        <p>No alerts match the current filters.</p>
+        <p class="empty-hint">Generate some with <code>sentryd replay tests/fixtures/portscan.pcap</code></p>
+      </div>
+    </section>
   </main>
+
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="drawer" class="drawer" hidden aria-label="Alert detail">
+    <div class="drawer-head">
+      <div id="drawer-title"></div>
+      <button id="drawer-close" class="icon-btn" aria-label="Close detail">✕</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
+
+  <div id="tooltip" class="tooltip" hidden></div>
 
   <script src="app.js"></script>
 </body>
