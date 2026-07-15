@@ -1,0 +1,20 @@
+# sentryd user configuration.
+#
+# Anything set here overrides the built-in defaults
+# (src/sentryd/data/default_config.yaml) — you only need to state what you
+# want to change. This file is picked up automatically when running sentryd
+# from the repo root, or pass it explicitly with --config.
+
+rules:
+  port_scan:
+    window_seconds: 10
+    min_distinct_targets: 15
+
+  # Example: extend the suspicious-port watchlist (replaces the default list
+  # for this rule when present — lists are not merged element-wise).
+  # suspicious_port:
+  #   ports:
+  #     - port: 3389
+  #       label: RDP
+  #       severity: medium
+  #       note: Remote desktop exposed to the capture segment.

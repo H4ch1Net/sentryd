@@ -1,0 +1,199 @@
+"""sentryd command-line interface."""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from sentryd import __version__
+from sentryd.config import load_config
+from sentryd.core.alerts import Alert, Severity
+from sentryd.core.engine import RuleEngine
+from sentryd.rules.base import build_rules
+from sentryd.sources.base import SourceError
+from sentryd.sources.pcap import PcapFileSource
+from sentryd.storage.store import DEFAULT_DB_PATH, AlertStore
+
+app = typer.Typer(
+    name="sentryd",
+    help="Network anomaly detection: deterministic rules, optional AI triage.",
+    no_args_is_help=True,
+)
+alerts_app = typer.Typer(help="Query stored alerts.", no_args_is_help=True)
+app.add_typer(alerts_app, name="alerts")
+
+console = Console()
+
+SEVERITY_STYLE = {
+    Severity.LOW: "cyan",
+    Severity.MEDIUM: "yellow",
+    Severity.HIGH: "red",
+    Severity.CRITICAL: "bold white on red",
+}
+
+DbOption = typer.Option(DEFAULT_DB_PATH, "--db", help="SQLite database path.")
+ConfigOption = typer.Option(
+    None, "--config", help="Config file (defaults to ./config/signatures.yaml if present)."
+)
+
+
+class ConsoleSink:
+    """Engine sink that prints each new alert as a severity-colored line."""
+
+    def emit(self, alert: Alert) -> None:
+        style = SEVERITY_STYLE[alert.severity]
+        console.print(
+            f"[{style}]{alert.severity.value.upper():>8}[/{style}] "
+            f"[dim]{_fmt_ts(alert.ts)}[/dim] "
+            f"[bold]{alert.rule_id}[/bold] {alert.title} "
+            f"[dim](confidence {alert.confidence:.2f})[/dim]"
+        )
+
+    def update(self, alert: Alert) -> None:
+        pass  # duplicate merges are reflected in storage, not re-printed
+
+
+def _fmt_ts(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_engine(config_path: Path | None, store: AlertStore) -> RuleEngine:
+    config = load_config(config_path)
+    return RuleEngine(
+        rules=build_rules(config),
+        sinks=[store, ConsoleSink()],
+        cooldown_seconds=config.get("engine", {}).get("cooldown_seconds", 60),
+    )
+
+
+@app.command()
+def replay(
+    pcap: Path = typer.Argument(..., help="pcap/pcapng file to replay."),
+    db: Path = DbOption,
+    config: Optional[Path] = ConfigOption,
+) -> None:
+    """Replay a capture file through the detection engine (primary demo mode)."""
+    store = AlertStore(db)
+    engine = _build_engine(config, store)
+    console.print(f"[bold]sentryd[/bold] v{__version__} — replaying [cyan]{pcap}[/cyan]")
+    console.print(f"rules: {', '.join(r.rule_id for r in engine.rules)}\n")
+    try:
+        stats = engine.run(PcapFileSource(pcap).events())
+    except SourceError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1)
+    finally:
+        store.close()
+
+    console.print(
+        f"\n[bold]done[/bold] — {stats.events_processed} events, "
+        f"{stats.alerts_emitted} alerts "
+        f"({stats.alerts_deduplicated} duplicates merged)"
+    )
+    for sev in Severity:
+        n = stats.by_severity.get(sev.value)
+        if n:
+            style = SEVERITY_STYLE[sev]
+            console.print(f"  [{style}]{sev.value}[/{style}]: {n}")
+    console.print(f"alerts stored in [cyan]{db}[/cyan] — inspect with `sentryd alerts list`")
+
+
+@alerts_app.command("list")
+def alerts_list(
+    db: Path = DbOption,
+    severity: Optional[str] = typer.Option(None, help="Filter: low|medium|high|critical."),
+    rule: Optional[str] = typer.Option(None, help="Filter by rule id."),
+    status: Optional[str] = typer.Option(None, help="Filter: new|triaged|dismissed."),
+    limit: int = typer.Option(50, help="Max rows."),
+) -> None:
+    """List stored alerts, newest first."""
+    store = AlertStore(db)
+    try:
+        rows = store.list(severity=severity, rule_id=rule, status=status, limit=limit)
+    finally:
+        store.close()
+
+    if not rows:
+        console.print("no alerts found")
+        return
+
+    table = Table(title=f"alerts ({len(rows)})")
+    table.add_column("id", justify="right")
+    table.add_column("time")
+    table.add_column("severity")
+    table.add_column("rule")
+    table.add_column("src")
+    table.add_column("dst")
+    table.add_column("title", overflow="fold")
+    table.add_column("count", justify="right")
+    table.add_column("status")
+    table.add_column("AI", justify="center")
+    for a in rows:
+        style = SEVERITY_STYLE[a.severity]
+        table.add_row(
+            str(a.id),
+            _fmt_ts(a.ts),
+            f"[{style}]{a.severity.value}[/{style}]",
+            a.rule_id,
+            a.src or "-",
+            a.dst or "-",
+            a.title,
+            str(a.count),
+            a.status.value,
+            "yes" if a.ai_summary else "-",
+        )
+    console.print(table)
+
+
+@alerts_app.command("show")
+def alerts_show(
+    alert_id: int = typer.Argument(..., help="Alert id (see `alerts list`)."),
+    db: Path = DbOption,
+) -> None:
+    """Show one alert in full: metadata, raw evidence, and AI writeup if any."""
+    store = AlertStore(db)
+    try:
+        alert = store.get(alert_id)
+    finally:
+        store.close()
+
+    if alert is None:
+        console.print(f"[red]error:[/red] no alert with id {alert_id}")
+        raise typer.Exit(code=1)
+
+    style = SEVERITY_STYLE[alert.severity]
+    header = (
+        f"[{style}]{alert.severity.value.upper()}[/{style}] {alert.title}\n\n"
+        f"rule:       {alert.rule_id}\n"
+        f"time:       {_fmt_ts(alert.ts)} UTC\n"
+        f"source:     {alert.src or '-'}\n"
+        f"target:     {alert.dst or '-'}\n"
+        f"confidence: {alert.confidence:.2f}\n"
+        f"count:      {alert.count}\n"
+        f"status:     {alert.status.value}"
+    )
+    console.print(Panel(header, title=f"alert #{alert.id}"))
+    console.print(Panel(json.dumps(alert.evidence, indent=2), title="evidence"))
+    if alert.ai_summary:
+        console.print(Panel(alert.ai_summary, title="AI triage"))
+    else:
+        console.print("[dim]no AI triage yet — run `sentryd triage " f"{alert.id}`[/dim]")
+
+
+@app.callback()
+def main(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug logging."),
+) -> None:
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING)
+
+
+if __name__ == "__main__":
+    app()
