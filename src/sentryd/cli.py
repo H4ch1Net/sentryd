@@ -21,6 +21,7 @@ from sentryd.rules.base import build_rules
 from sentryd.sources.base import SourceError
 from sentryd.sources.pcap import PcapFileSource
 from sentryd.storage.store import DEFAULT_DB_PATH, AlertStore
+from sentryd.triage.base import NullTriage, TriageProvider, create_provider
 
 app = typer.Typer(
     name="sentryd",
@@ -74,19 +75,58 @@ def _build_engine(config_path: Path | None, store: AlertStore) -> RuleEngine:
     )
 
 
+def _triage_alerts(store: AlertStore, alerts: list[Alert]) -> None:
+    """Run AI triage over freshly stored alerts; a missing key is a no-op."""
+    provider = create_provider()
+    if isinstance(provider, NullTriage):
+        console.print(
+            "[dim]AI triage skipped — set OPENROUTER_API_KEY in .env to enable it. "
+            "All alerts are fully recorded without it.[/dim]"
+        )
+        return
+    for alert in alerts:
+        result = provider.triage(alert)
+        if result is None:
+            console.print(f"[yellow]AI triage failed for alert #{alert.id} (see logs)[/yellow]")
+            continue
+        store.set_ai_summary(alert.id, result.summary)
+        console.print(Panel(result.summary, title=f"AI triage — alert #{alert.id} ({result.model})"))
+
+
+class CollectorSink:
+    """Engine sink that remembers every new alert (for post-run triage)."""
+
+    def __init__(self) -> None:
+        self.alerts: list[Alert] = []
+
+    def emit(self, alert: Alert) -> None:
+        self.alerts.append(alert)
+
+    def update(self, alert: Alert) -> None:
+        pass
+
+
 @app.command()
 def replay(
     pcap: Path = typer.Argument(..., help="pcap/pcapng file to replay."),
     db: Path = DbOption,
     config: Optional[Path] = ConfigOption,
+    triage: bool = typer.Option(
+        False, "--triage", help="Generate AI writeups for detected alerts afterwards."
+    ),
 ) -> None:
     """Replay a capture file through the detection engine (primary demo mode)."""
     store = AlertStore(db)
+    collector = CollectorSink()
     engine = _build_engine(config, store)
+    engine.sinks.append(collector)
     console.print(f"[bold]sentryd[/bold] v{__version__} — replaying [cyan]{pcap}[/cyan]")
     console.print(f"rules: {', '.join(r.rule_id for r in engine.rules)}\n")
     try:
         stats = engine.run(PcapFileSource(pcap).events())
+        if triage and collector.alerts:
+            console.print()
+            _triage_alerts(store, collector.alerts)
     except SourceError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=1)
@@ -186,6 +226,46 @@ def alerts_show(
         console.print(Panel(alert.ai_summary, title="AI triage"))
     else:
         console.print("[dim]no AI triage yet — run `sentryd triage " f"{alert.id}`[/dim]")
+
+
+@app.command()
+def triage(
+    alert_id: int = typer.Argument(..., help="Alert id to triage (see `alerts list`)."),
+    db: Path = DbOption,
+    force: bool = typer.Option(False, "--force", help="Regenerate even if a writeup exists."),
+) -> None:
+    """Generate (or regenerate) the AI analyst writeup for a stored alert.
+
+    Detection never depends on this — it annotates an alert that already
+    exists. Requires OPENROUTER_API_KEY in the environment or .env.
+    """
+    store = AlertStore(db)
+    try:
+        alert = store.get(alert_id)
+        if alert is None:
+            console.print(f"[red]error:[/red] no alert with id {alert_id}")
+            raise typer.Exit(code=1)
+        if alert.ai_summary and not force:
+            console.print(Panel(alert.ai_summary, title=f"AI triage — alert #{alert.id} (cached)"))
+            console.print("[dim]use --force to regenerate[/dim]")
+            return
+
+        provider: TriageProvider = create_provider()
+        if isinstance(provider, NullTriage):
+            console.print(
+                "[yellow]AI triage is not configured.[/yellow] Set OPENROUTER_API_KEY "
+                "in .env (see .env.example). The alert itself is complete without it."
+            )
+            raise typer.Exit(code=2)
+
+        result = provider.triage(alert)
+        if result is None:
+            console.print("[red]error:[/red] triage request failed — alert left unannotated")
+            raise typer.Exit(code=1)
+        store.set_ai_summary(alert.id, result.summary)
+        console.print(Panel(result.summary, title=f"AI triage — alert #{alert.id} ({result.model})"))
+    finally:
+        store.close()
 
 
 @app.callback()
