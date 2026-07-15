@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from sentryd.core.events import Event, packet_to_event
-from sentryd.sources.base import SourceError
+from sentryd.sources.base import SourceError, register_scapy_layers
 
 
 class PcapFileSource:
@@ -18,10 +18,7 @@ class PcapFileSource:
         self.path = Path(path)
 
     def events(self) -> Iterator[Event]:
-        # Importing the layer modules registers their link-layer bindings —
-        # without this, PcapReader decodes every frame as Raw.
-        import scapy.layers.inet  # noqa: F401
-        import scapy.layers.l2  # noqa: F401
+        register_scapy_layers()
         from scapy.error import Scapy_Exception
         from scapy.utils import PcapReader
 

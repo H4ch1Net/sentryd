@@ -23,7 +23,7 @@ class AlwaysFireRule(Rule):
                 ts=event.ts,
                 src=event.src_ip,
                 dst=event.dst_ip,
-                evidence={},
+                evidence={"first_ts": event.ts},
             )
         ]
 
@@ -129,6 +129,48 @@ def test_failing_rule_does_not_stop_the_run():
     engine.process(make_event(ts=100.0))
 
     assert len(sink.emitted) == 1  # AlwaysFireRule still ran
+
+
+def test_merge_keeps_rule_written_evidence():
+    # Dedup must never clobber the evidence the rule wrote at first firing —
+    # that's the aggregate view an analyst verifies the finding with.
+    sink = RecordingSink()
+    engine = RuleEngine([AlwaysFireRule()], sinks=[sink], cooldown_seconds=60)
+
+    engine.process(make_event(ts=100.0))
+    engine.process(make_event(ts=105.0))
+
+    assert sink.emitted[0].count == 2
+    assert sink.emitted[0].evidence == {"first_ts": 100.0}
+
+
+def test_counts_persisted_mid_run_by_maintenance():
+    # An endless live source never reaches the end-of-run flush; pending
+    # count updates must still land in sinks as event time advances.
+    sink = RecordingSink()
+    engine = RuleEngine([AlwaysFireRule()], sinks=[sink], cooldown_seconds=10)
+
+    engine.process(make_event(ts=100.0))
+    engine.process(make_event(ts=105.0))  # merged -> pending update
+    assert sink.updated == []  # not yet persisted
+
+    # unrelated traffic a cooldown later triggers maintenance
+    engine.process(make_event(ts=120.0, src_ip="10.9.9.9"))
+
+    assert len(sink.updated) == 1
+    assert sink.updated[0].count == 2
+
+
+def test_maintenance_evicts_expired_dedup_state():
+    engine = RuleEngine([AlwaysFireRule()], cooldown_seconds=10)
+
+    for i in range(20):
+        engine.process(make_event(ts=100.0, src_ip=f"10.0.{i}.1"))
+    assert len(engine._open_alerts) == 20
+
+    engine.process(make_event(ts=200.0, src_ip="10.9.9.9"))  # all 20 long expired
+
+    assert len(engine._open_alerts) == 1  # only the fresh alert remains
 
 
 def test_run_drains_source_and_reports_stats():

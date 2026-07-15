@@ -23,11 +23,8 @@ def create_app(db_path: Path) -> FastAPI:
     app = FastAPI(title="sentryd", version=__version__)
 
     def with_store(fn):
-        store = AlertStore(db_path)
-        try:
+        with AlertStore(db_path) as store:
             return fn(store)
-        finally:
-            store.close()
 
     @app.get("/api/alerts")
     def list_alerts(

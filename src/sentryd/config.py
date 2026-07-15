@@ -21,6 +21,10 @@ def _deep_merge(base: dict, override: dict) -> dict:
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
+        elif value is None and key in merged:
+            # An empty YAML key ("rules:" with nothing under it) parses as
+            # None; treat it as "no override" rather than wiping defaults.
+            continue
         else:
             merged[key] = value
     return merged
@@ -41,4 +45,16 @@ def load_config(path: Path | None = None) -> dict:
         if not isinstance(user, dict):
             raise ValueError(f"config file {path} must contain a YAML mapping")
         config = _deep_merge(config, user)
+    _validate(config)
     return config
+
+
+def _validate(config: dict) -> None:
+    """Reject malformed top-level shapes with a clear message instead of an
+    AttributeError deep inside rule construction."""
+    if not isinstance(config.get("rules", {}), dict):
+        raise ValueError("config 'rules:' must be a mapping of rule id to settings")
+    if not isinstance(config.get("signatures", []), list):
+        raise ValueError("config 'signatures:' must be a list of signature entries")
+    if not isinstance(config.get("engine", {}), dict):
+        raise ValueError("config 'engine:' must be a mapping")

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from sentryd.core.events import Event, packet_to_event
-from sentryd.sources.base import SourceError
+from sentryd.sources.base import SourceError, register_scapy_layers
 
 
 class LiveCaptureSource:
@@ -19,8 +19,7 @@ class LiveCaptureSource:
         self.bpf_filter = bpf_filter
 
     def events(self) -> Iterator[Event]:
-        import scapy.layers.inet  # noqa: F401  (register link-layer bindings)
-        import scapy.layers.l2  # noqa: F401
+        register_scapy_layers()
         from scapy.config import conf
         from scapy.data import ETH_P_ALL
 

@@ -9,11 +9,42 @@ sweeps (one port, many hosts).
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import Counter, deque
+from dataclasses import dataclass, field
 
 from sentryd.core.alerts import Alert, Severity
 from sentryd.core.events import Event
 from sentryd.rules.base import Rule, register
+
+
+@dataclass
+class _SourceWindow:
+    """Sliding window of one source's connection attempts.
+
+    Distinct-target counts are maintained incrementally (Counter updated on
+    append/expiry) so processing stays O(1) per packet instead of rebuilding
+    a set from the whole window on every SYN.
+    """
+
+    attempts: deque[tuple[float, str, int]] = field(default_factory=deque)
+    targets: Counter = field(default_factory=Counter)  # (dst_ip, dst_port) -> hits
+
+    def add(self, ts: float, dst: str, port: int) -> None:
+        self.attempts.append((ts, dst, port))
+        self.targets[(dst, port)] += 1
+
+    def expire_before(self, cutoff: float) -> None:
+        while self.attempts and self.attempts[0][0] < cutoff:
+            _, dst, port = self.attempts.popleft()
+            remaining = self.targets[(dst, port)] - 1
+            if remaining:
+                self.targets[(dst, port)] = remaining
+            else:
+                del self.targets[(dst, port)]
+
+    @property
+    def newest_ts(self) -> float | None:
+        return self.attempts[-1][0] if self.attempts else None
 
 
 @register
@@ -27,10 +58,12 @@ class PortScanRule(Rule):
     ) -> None:
         self.window_seconds = float(window_seconds)
         self.min_distinct_targets = int(min_distinct_targets)
-        # src ip -> deque of (ts, dst_ip, dst_port)
-        self._attempts: dict[str, deque[tuple[float, str, int]]] = defaultdict(deque)
-        # src ip -> ts of last alert, to avoid re-firing on every packet
-        self._last_fired: dict[str, float] = {}
+        self._windows: dict[str, _SourceWindow] = {}
+        # Refire suppression, keyed exactly like the alert identity
+        # (src, single-victim-or-None) so a scan of a NEW host is never
+        # swallowed by the suppression for a previous host's alert.
+        self._last_fired: dict[tuple[str, str | None], float] = {}
+        self._last_sweep: float | None = None
 
     def process(self, event: Event) -> list[Alert]:
         if (
@@ -42,30 +75,35 @@ class PortScanRule(Rule):
         ):
             return []
 
-        window = self._attempts[event.src_ip]
-        window.append((event.ts, event.dst_ip, event.dst_port))
-        cutoff = event.ts - self.window_seconds
-        while window and window[0][0] < cutoff:
-            window.popleft()
+        self._maybe_sweep(event.ts)
 
-        targets = {(dst, port) for _, dst, port in window}
-        if len(targets) < self.min_distinct_targets:
+        window = self._windows.get(event.src_ip)
+        if window is None:
+            window = self._windows[event.src_ip] = _SourceWindow()
+        window.add(event.ts, event.dst_ip, event.dst_port)
+        window.expire_before(event.ts - self.window_seconds)
+
+        if len(window.targets) < self.min_distinct_targets:
             return []
+
+        hosts = {dst for dst, _ in window.targets}
+        victim = next(iter(hosts)) if len(hosts) == 1 else None
 
         # Once tripped, stay quiet for a full window so an ongoing scan
         # produces one alert per window (the engine merges those further).
-        last = self._last_fired.get(event.src_ip)
+        fired_key = (event.src_ip, victim)
+        last = self._last_fired.get(fired_key)
         if last is not None and event.ts - last < self.window_seconds:
             return []
-        self._last_fired[event.src_ip] = event.ts
+        self._last_fired[fired_key] = event.ts
 
-        hosts = {dst for dst, _ in targets}
-        ports = sorted({port for _, port in targets})
-        span = round(window[-1][0] - window[0][0], 3)
+        ports = sorted({port for _, port in window.targets})
+        span = round(window.attempts[-1][0] - window.attempts[0][0], 3)
+        distinct = len(window.targets)
 
-        if len(hosts) == 1:
+        if victim is not None:
             kind = "vertical"
-            title = f"Port scan: {event.src_ip} probed {len(ports)} ports on {next(iter(hosts))}"
+            title = f"Port scan: {event.src_ip} probed {len(ports)} ports on {victim}"
         elif len(ports) <= 3:
             kind = "horizontal"
             title = (
@@ -75,12 +113,12 @@ class PortScanRule(Rule):
         else:
             kind = "mixed"
             title = (
-                f"Port scan: {event.src_ip} probed {len(targets)} host/port "
+                f"Port scan: {event.src_ip} probed {distinct} host/port "
                 f"combinations across {len(hosts)} hosts"
             )
 
         # Confidence grows with how far past the threshold the burst is.
-        overshoot = len(targets) / self.min_distinct_targets
+        overshoot = distinct / self.min_distinct_targets
         confidence = round(min(0.95, 0.70 + 0.10 * (overshoot - 1.0)), 2)
 
         return [
@@ -91,17 +129,39 @@ class PortScanRule(Rule):
                 title=title,
                 ts=event.ts,
                 src=event.src_ip,
-                dst=next(iter(hosts)) if len(hosts) == 1 else None,
+                dst=victim,
                 evidence={
                     "scan_type": kind,
-                    "distinct_targets": len(targets),
+                    "distinct_targets": distinct,
                     "distinct_ports": len(ports),
                     "distinct_hosts": len(hosts),
                     "window_seconds": self.window_seconds,
                     "observed_span_seconds": span,
                     "sample_ports": ports[:25],
                     "sample_hosts": sorted(hosts)[:10],
-                    "syn_only_attempts": len(window),
+                    "syn_only_attempts": len(window.attempts),
                 },
             )
         ]
+
+    def _maybe_sweep(self, now: float) -> None:
+        """Evict sources whose whole window has expired (event-time paced).
+
+        Without this, one dict entry per distinct source IP lives forever —
+        unbounded growth under spoofed-source floods on a live capture.
+        """
+        if self._last_sweep is None:
+            self._last_sweep = now
+            return
+        if now - self._last_sweep < self.window_seconds:
+            return
+        self._last_sweep = now
+        cutoff = now - self.window_seconds
+        for src in [
+            src
+            for src, window in self._windows.items()
+            if window.newest_ts is None or window.newest_ts < cutoff
+        ]:
+            del self._windows[src]
+        for key in [key for key, ts in self._last_fired.items() if ts < cutoff]:
+            del self._last_fired[key]

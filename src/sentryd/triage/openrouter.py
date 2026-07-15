@@ -17,6 +17,7 @@ API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 class OpenRouterTriage:
     name = "openrouter"
+    available = True
 
     def __init__(
         self,

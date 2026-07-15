@@ -53,8 +53,13 @@ def packet_to_event(pkt) -> Event | None:
     ts = float(pkt.time)
     length = len(pkt)
 
+    # Summaries are built from the fields we already extracted rather than
+    # scapy's pkt.summary(): that call walks and stringifies every layer and
+    # dominates per-packet cost when replaying large captures.
     if ARP in pkt:
         arp = pkt[ARP]
+        op = int(arp.op)
+        verb = "is-at" if op == 2 else "who-has"
         return Event(
             ts=ts,
             protocol="arp",
@@ -62,33 +67,29 @@ def packet_to_event(pkt) -> Event | None:
             src_ip=arp.psrc,
             dst_ip=arp.pdst,
             arp=ArpInfo(
-                op=int(arp.op),
+                op=op,
                 sender_mac=arp.hwsrc,
                 sender_ip=arp.psrc,
                 target_ip=arp.pdst,
             ),
-            summary=pkt.summary(),
+            summary=f"arp {verb} {arp.pdst} from {arp.psrc} ({arp.hwsrc})",
         )
 
     if IP not in pkt:
         return None
 
     ip = pkt[IP]
-    common = dict(
-        ts=ts,
-        length=length,
-        src_ip=ip.src,
-        dst_ip=ip.dst,
-        summary=pkt.summary(),
-    )
+    common = dict(ts=ts, length=length, src_ip=ip.src, dst_ip=ip.dst)
 
     if TCP in pkt:
         tcp = pkt[TCP]
+        flags = str(tcp.flags)
         return Event(
             protocol="tcp",
             src_port=int(tcp.sport),
             dst_port=int(tcp.dport),
-            tcp_flags=str(tcp.flags),
+            tcp_flags=flags,
+            summary=f"tcp {ip.src}:{tcp.sport} > {ip.dst}:{tcp.dport} [{flags}]",
             **common,
         )
     if UDP in pkt:
@@ -97,9 +98,12 @@ def packet_to_event(pkt) -> Event | None:
             protocol="udp",
             src_port=int(udp.sport),
             dst_port=int(udp.dport),
+            summary=f"udp {ip.src}:{udp.sport} > {ip.dst}:{udp.dport}",
             **common,
         )
     if ICMP in pkt:
-        return Event(protocol="icmp", **common)
+        return Event(protocol="icmp", summary=f"icmp {ip.src} > {ip.dst}", **common)
 
-    return Event(protocol="other", **common)
+    return Event(
+        protocol="other", summary=f"ip proto={int(ip.proto)} {ip.src} > {ip.dst}", **common
+    )

@@ -74,6 +74,32 @@ def test_sustained_scan_refires_at_most_once_per_window():
     assert 1 <= len(alerts) <= 3
 
 
+def test_second_host_scan_not_swallowed_by_suppression():
+    # Regression: refire suppression is keyed to the alert identity, so a
+    # scan that moves to a NEW victim inside the window still alerts.
+    rule = PortScanRule(window_seconds=10, min_distinct_targets=15)
+    first = scan_events(20, target="10.0.0.9", start=100.0)
+    second = scan_events(20, target="10.0.0.10", start=103.0)
+
+    alerts = run_events(rule, first + second)
+
+    assert len(alerts) == 2
+    assert alerts[0].dst == "10.0.0.9"
+    assert alerts[1].dst is None  # window now spans both hosts
+
+
+def test_idle_sources_are_swept():
+    # Spoofed-source floods must not grow per-source state forever.
+    rule = PortScanRule(window_seconds=10, min_distinct_targets=15)
+    for i in range(50):
+        rule.process(make_event(ts=100.0, src_ip=f"10.1.{i}.1", dst_port=80))
+    assert len(rule._windows) == 50
+
+    rule.process(make_event(ts=200.0, src_ip="10.9.9.9", dst_port=80))
+
+    assert len(rule._windows) == 1  # everything idle past the window is gone
+
+
 def test_sources_tracked_independently():
     rule = PortScanRule(window_seconds=10, min_distinct_targets=15)
     # Two sources each probe 10 ports — 20 total, but neither crosses 15.

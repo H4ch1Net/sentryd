@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import queue
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.text import Text
@@ -27,21 +26,11 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Static
 
-from sentryd.core.alerts import Alert, Severity
+from sentryd.core.alerts import Alert
+from sentryd.render import SEVERITY_STYLE, fmt_ts_utc
 from sentryd.storage.store import AlertStore
 
-SEVERITY_STYLE = {
-    Severity.LOW: "cyan",
-    Severity.MEDIUM: "yellow",
-    Severity.HIGH: "red",
-    Severity.CRITICAL: "bold white on red",
-}
-
 COLUMNS = ("id", "time", "severity", "rule", "src", "dst", "count", "title")
-
-
-def _fmt_ts(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
 
 
 class QueueSink:
@@ -74,7 +63,7 @@ class AlertDetail(Screen):
         meta.append(a.title, style="bold")
         meta.append(
             f"\n\nrule:       {a.rule_id}"
-            f"\ntime:       {_fmt_ts(a.ts)} UTC"
+            f"\ntime:       {fmt_ts_utc(a.ts, date=False)} UTC"
             f"\nsource:     {a.src or '-'}"
             f"\ntarget:     {a.dst or '-'}"
             f"\nconfidence: {a.confidence:.2f}"
@@ -201,15 +190,12 @@ class DashboardApp(App):
     # -- browse mode -------------------------------------------------------------
 
     def _load_from_store(self) -> None:
-        store = AlertStore(self.db_path)
-        try:
+        with AlertStore(self.db_path) as store:
             for alert in reversed(store.list(limit=500)):  # oldest first
                 if alert.id in self._alerts:
                     self._update_alert(alert)
                 else:
                     self._add_alert(alert)
-        finally:
-            store.close()
 
     # -- shared table plumbing -----------------------------------------------------
 
@@ -221,7 +207,7 @@ class DashboardApp(App):
         style = SEVERITY_STYLE[alert.severity]
         table.add_row(
             str(alert.id),
-            _fmt_ts(alert.ts),
+            fmt_ts_utc(alert.ts, date=False),
             Text(alert.severity.value, style=style),
             alert.rule_id,
             alert.src or "-",

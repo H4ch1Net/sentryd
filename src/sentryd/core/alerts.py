@@ -8,6 +8,7 @@ from enum import StrEnum
 
 
 class Severity(StrEnum):
+    # Declaration order IS the ranking (least to most severe).
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -15,7 +16,7 @@ class Severity(StrEnum):
 
     @property
     def rank(self) -> int:
-        return {"low": 0, "medium": 1, "high": 2, "critical": 3}[self.value]
+        return list(type(self)).index(self)
 
 
 class AlertStatus(StrEnum):

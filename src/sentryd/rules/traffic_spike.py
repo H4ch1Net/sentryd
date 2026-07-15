@@ -48,12 +48,19 @@ class TrafficSpikeRule(Rule):
         self.ewma_alpha = float(ewma_alpha)
         self.warmup_buckets = int(warmup_buckets)
         self._hosts: dict[str, _HostWindow] = {}
+        self._last_sweep_idx: int | None = None
+
+    # Hosts idle this many buckets are forgotten (their baseline has decayed
+    # to noise anyway); bounds per-host state on long live captures where
+    # spoofed sources would otherwise accumulate forever.
+    IDLE_EXPIRY_BUCKETS = 120
 
     def process(self, event: Event) -> list[Alert]:
         if event.src_ip is None or event.length <= 0:
             return []
 
         idx = int(event.ts // self.bucket_seconds)
+        self._maybe_sweep(idx)
         window = self._hosts.get(event.src_ip)
         if window is None:
             self._hosts[event.src_ip] = _HostWindow(bucket_idx=idx)
@@ -75,6 +82,20 @@ class TrafficSpikeRule(Rule):
         window.bytes += event.length
         window.packets += 1
         return alerts
+
+    def _maybe_sweep(self, idx: int) -> None:
+        if self._last_sweep_idx is None:
+            self._last_sweep_idx = idx
+            return
+        if idx - self._last_sweep_idx < self.IDLE_EXPIRY_BUCKETS:
+            return
+        self._last_sweep_idx = idx
+        for host in [
+            host
+            for host, window in self._hosts.items()
+            if idx - window.bucket_idx > self.IDLE_EXPIRY_BUCKETS
+        ]:
+            del self._hosts[host]
 
     def _finalize_bucket(self, host: str, window: _HostWindow) -> list[Alert]:
         completed_bytes = window.bytes

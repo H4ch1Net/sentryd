@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -17,13 +16,14 @@ from sentryd import __version__
 from sentryd.config import load_config
 from sentryd.core.alerts import Alert, Severity
 from sentryd.core.engine import RuleEngine
+from sentryd.render import SEVERITY_STYLE, fmt_ts_utc
 from sentryd.rules.base import build_rules
 from sentryd.sources.base import SourceError
 from sentryd.sources.live import LiveCaptureSource
 from sentryd.sources.logtail import LogTailSource
 from sentryd.sources.pcap import PcapFileSource
 from sentryd.storage.store import DEFAULT_DB_PATH, AlertStore
-from sentryd.triage.base import NullTriage, TriageProvider, create_provider
+from sentryd.triage.base import TriageProvider, create_provider
 
 app = typer.Typer(
     name="sentryd",
@@ -34,13 +34,6 @@ alerts_app = typer.Typer(help="Query stored alerts.", no_args_is_help=True)
 app.add_typer(alerts_app, name="alerts")
 
 console = Console()
-
-SEVERITY_STYLE = {
-    Severity.LOW: "cyan",
-    Severity.MEDIUM: "yellow",
-    Severity.HIGH: "red",
-    Severity.CRITICAL: "bold white on red",
-}
 
 DbOption = typer.Option(DEFAULT_DB_PATH, "--db", help="SQLite database path.")
 ConfigOption = typer.Option(
@@ -55,17 +48,13 @@ class ConsoleSink:
         style = SEVERITY_STYLE[alert.severity]
         console.print(
             f"[{style}]{alert.severity.value.upper():>8}[/{style}] "
-            f"[dim]{_fmt_ts(alert.ts)}[/dim] "
+            f"[dim]{fmt_ts_utc(alert.ts)}[/dim] "
             f"[bold]{alert.rule_id}[/bold] {alert.title} "
             f"[dim](confidence {alert.confidence:.2f})[/dim]"
         )
 
     def update(self, alert: Alert) -> None:
         pass  # duplicate merges are reflected in storage, not re-printed
-
-
-def _fmt_ts(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _build_engine(config_path: Path | None, store: AlertStore) -> RuleEngine:
@@ -80,7 +69,7 @@ def _build_engine(config_path: Path | None, store: AlertStore) -> RuleEngine:
 def _triage_alerts(store: AlertStore, alerts: list[Alert]) -> None:
     """Run AI triage over freshly stored alerts; a missing key is a no-op."""
     provider = create_provider()
-    if isinstance(provider, NullTriage):
+    if not provider.available:
         console.print(
             "[dim]AI triage skipped — set OPENROUTER_API_KEY in .env to enable it. "
             "All alerts are fully recorded without it.[/dim]"
@@ -222,11 +211,8 @@ def alerts_list(
     limit: int = typer.Option(50, help="Max rows."),
 ) -> None:
     """List stored alerts, newest first."""
-    store = AlertStore(db)
-    try:
+    with AlertStore(db) as store:
         rows = store.list(severity=severity, rule_id=rule, status=status, limit=limit)
-    finally:
-        store.close()
 
     if not rows:
         console.print("no alerts found")
@@ -247,7 +233,7 @@ def alerts_list(
         style = SEVERITY_STYLE[a.severity]
         table.add_row(
             str(a.id),
-            _fmt_ts(a.ts),
+            fmt_ts_utc(a.ts),
             f"[{style}]{a.severity.value}[/{style}]",
             a.rule_id,
             a.src or "-",
@@ -266,11 +252,8 @@ def alerts_show(
     db: Path = DbOption,
 ) -> None:
     """Show one alert in full: metadata, raw evidence, and AI writeup if any."""
-    store = AlertStore(db)
-    try:
+    with AlertStore(db) as store:
         alert = store.get(alert_id)
-    finally:
-        store.close()
 
     if alert is None:
         console.print(f"[red]error:[/red] no alert with id {alert_id}")
@@ -280,7 +263,7 @@ def alerts_show(
     header = (
         f"[{style}]{alert.severity.value.upper()}[/{style}] {alert.title}\n\n"
         f"rule:       {alert.rule_id}\n"
-        f"time:       {_fmt_ts(alert.ts)} UTC\n"
+        f"time:       {fmt_ts_utc(alert.ts)} UTC\n"
         f"source:     {alert.src or '-'}\n"
         f"target:     {alert.dst or '-'}\n"
         f"confidence: {alert.confidence:.2f}\n"
@@ -343,8 +326,7 @@ def triage(
     Detection never depends on this — it annotates an alert that already
     exists. Requires OPENROUTER_API_KEY in the environment or .env.
     """
-    store = AlertStore(db)
-    try:
+    with AlertStore(db) as store:
         alert = store.get(alert_id)
         if alert is None:
             console.print(f"[red]error:[/red] no alert with id {alert_id}")
@@ -355,7 +337,7 @@ def triage(
             return
 
         provider: TriageProvider = create_provider()
-        if isinstance(provider, NullTriage):
+        if not provider.available:
             console.print(
                 "[yellow]AI triage is not configured.[/yellow] Set OPENROUTER_API_KEY "
                 "in .env (see .env.example). The alert itself is complete without it."
@@ -368,8 +350,6 @@ def triage(
             raise typer.Exit(code=1)
         store.set_ai_summary(alert.id, result.summary)
         console.print(Panel(result.summary, title=f"AI triage — alert #{alert.id} ({result.model})"))
-    finally:
-        store.close()
 
 
 @app.callback()

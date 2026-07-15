@@ -41,17 +41,25 @@ class AlertStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
 
+    def __enter__(self) -> "AlertStore":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     # -- engine sink interface ------------------------------------------------
 
     def emit(self, alert: Alert) -> None:
         self.insert(alert)
 
     def update(self, alert: Alert) -> None:
+        # Dedup merges only ever bump count/severity/confidence; evidence is
+        # rule-owned and immutable after emit.
         if alert.id is None:
             return
         self._conn.execute(
-            "UPDATE alerts SET count = ?, severity = ?, confidence = ?, evidence = ? WHERE id = ?",
-            (alert.count, alert.severity.value, alert.confidence, alert.evidence_json(), alert.id),
+            "UPDATE alerts SET count = ?, severity = ?, confidence = ? WHERE id = ?",
+            (alert.count, alert.severity.value, alert.confidence, alert.id),
         )
         self._conn.commit()
 

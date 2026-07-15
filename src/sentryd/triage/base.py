@@ -28,6 +28,7 @@ class TriageResult:
 @runtime_checkable
 class TriageProvider(Protocol):
     name: str
+    available: bool  # False = triage is a guaranteed no-op (no key, disabled)
 
     def triage(self, alert: Alert) -> TriageResult | None:
         """Produce an analyst writeup for the alert, or None on any failure."""
@@ -38,6 +39,7 @@ class NullTriage:
     """The no-op provider used when AI triage is unavailable or disabled."""
 
     name = "none"
+    available = False
 
     def triage(self, alert: Alert) -> TriageResult | None:
         return None

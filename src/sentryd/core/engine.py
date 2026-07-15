@@ -56,10 +56,12 @@ class RuleEngine:
         # dedup_key -> (last event ts seen for this key, the open alert)
         self._open_alerts: dict[tuple, tuple[float, Alert]] = {}
         self._dirty: set[tuple] = set()  # open alerts with unpersisted count bumps
+        self._last_maintenance: float | None = None
 
     def process(self, event: Event) -> list[Alert]:
         """Run one event through all rules; returns newly created alerts."""
         self.stats.events_processed += 1
+        self._maintain(event.ts)
         new_alerts: list[Alert] = []
         for rule in self.rules:
             try:
@@ -96,22 +98,55 @@ class RuleEngine:
                 sink.update(entry[1])
         self._dirty.clear()
 
+    def _maintain(self, now: float) -> None:
+        """Periodic upkeep, paced by event time (once per cooldown window).
+
+        Two jobs: persist pending count updates mid-run — an endless live
+        source never reaches the end-of-run flush, and stored alerts would
+        otherwise show stale counts until Ctrl-C — and evict expired dedup
+        entries so the map doesn't grow unboundedly over a long capture
+        (one entry per distinct src/dst pair would otherwise live forever).
+        """
+        if self._last_maintenance is None:
+            self._last_maintenance = now
+            return
+        if now - self._last_maintenance < self.cooldown_seconds:
+            return
+        self._last_maintenance = now
+        self.flush()
+        expired = [
+            key
+            for key, (last_ts, _) in self._open_alerts.items()
+            if now - last_ts > self.cooldown_seconds
+        ]
+        for key in expired:
+            del self._open_alerts[key]
+
+    def _flush_one(self, key: tuple, alert: Alert) -> None:
+        if key not in self._dirty:
+            return
+        for sink in self.sinks:
+            sink.update(alert)
+        self._dirty.discard(key)
+
     def _absorb_duplicate(self, alert: Alert) -> bool:
         entry = self._open_alerts.get(alert.dedup_key)
         if entry is None:
             return False
         last_ts, existing = entry
         if alert.ts - last_ts > self.cooldown_seconds:
-            # Cooldown expired: treat as a fresh alert next time around.
+            # Cooldown expired: persist the old alert's final count, then
+            # treat this occurrence as a fresh alert.
+            self._flush_one(alert.dedup_key, existing)
             del self._open_alerts[alert.dedup_key]
-            self._dirty.discard(alert.dedup_key)
             return False
         existing.count += 1
-        # Keep the most severe/most confident view of the ongoing activity.
+        # Keep the most severe/most confident view of the ongoing activity;
+        # evidence stays as the rule wrote it at first firing (its aggregate
+        # view when the threshold tripped), which dedup must not clobber.
         if alert.severity.rank > existing.severity.rank:
             existing.severity = alert.severity
         existing.confidence = max(existing.confidence, alert.confidence)
-        existing.evidence = alert.evidence | {"first_seen": existing.evidence.get("first_seen", existing.ts)}
         self._open_alerts[alert.dedup_key] = (alert.ts, existing)
         self._dirty.add(alert.dedup_key)
         self.stats.alerts_deduplicated += 1

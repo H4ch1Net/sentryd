@@ -74,6 +74,31 @@ def test_new_only_skips_existing_content(tmp_path):
     assert list(source.events()) == []
 
 
+def test_reopen_detected_on_truncation(tmp_path):
+    logfile = tmp_path / "traffic.log"
+    logfile.write_text(log_line(ts=1.0, protocol="tcp") + "\n")
+    source = LogTailSource(logfile)
+
+    with logfile.open() as handle:
+        handle.read()
+        assert not source._should_reopen(handle)
+        logfile.write_text("")  # copytruncate-style rotation
+        assert source._should_reopen(handle)
+
+
+def test_reopen_detected_on_rename_and_recreate(tmp_path):
+    logfile = tmp_path / "traffic.log"
+    logfile.write_text(log_line(ts=1.0, protocol="tcp") + "\n")
+    source = LogTailSource(logfile)
+
+    with logfile.open() as handle:
+        handle.read()
+        logfile.rename(tmp_path / "traffic.log.1")
+        assert not source._should_reopen(handle)  # mid-rotation: keep waiting
+        logfile.write_text(log_line(ts=2.0, protocol="tcp") + "\n")
+        assert source._should_reopen(handle)  # new inode at the old path
+
+
 def test_syn_scan_in_log_triggers_port_scan(tmp_path):
     logfile = tmp_path / "traffic.log"
     lines = [

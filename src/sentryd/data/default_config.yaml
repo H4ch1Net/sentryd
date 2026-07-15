@@ -23,7 +23,8 @@ rules:
   arp_spoof:
     enabled: true
     gratuitous_window_seconds: 10
-    gratuitous_threshold: 8  # gratuitous announcements per window before flagging
+    gratuitous_threshold: 8   # gratuitous announcements per window before flagging
+    mapping_ttl_seconds: 3600 # IP-to-MAC mappings expire like a real ARP cache
 
   suspicious_port:
     enabled: true

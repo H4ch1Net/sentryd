@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Iterator
 from datetime import datetime
@@ -90,7 +91,8 @@ class LogTailSource:
         if not self.path.is_file():
             raise SourceError(f"log file not found: {self.path}")
 
-        with self.path.open("r", errors="replace") as handle:
+        handle = self.path.open("r", errors="replace")
+        try:
             if not self.from_start:
                 handle.seek(0, 2)  # jump to EOF: only new lines count
             while True:
@@ -98,6 +100,13 @@ class LogTailSource:
                 if not line:
                     if not self.follow:
                         return
+                    if self._should_reopen(handle):
+                        # logrotate renamed/recreated or truncated the file;
+                        # switch to the new content from its beginning.
+                        handle.close()
+                        handle = self.path.open("r", errors="replace")
+                        log.info("log file %s rotated — following new file", self.path)
+                        continue
                     time.sleep(self.poll_interval)
                     continue
                 event = parse_line(line)
@@ -105,3 +114,18 @@ class LogTailSource:
                     yield event
                 elif line.strip():
                     self.skipped_lines += 1
+        finally:
+            handle.close()
+
+    def _should_reopen(self, handle) -> bool:
+        """True when the path now points at a different or truncated file.
+
+        Detects both logrotate styles: rename-and-recreate (inode changes)
+        and copytruncate (size drops below our read offset).
+        """
+        try:
+            on_disk = os.stat(self.path)
+        except FileNotFoundError:
+            return False  # mid-rotation; keep waiting on the old handle
+        opened = os.fstat(handle.fileno())
+        return on_disk.st_ino != opened.st_ino or on_disk.st_size < handle.tell()

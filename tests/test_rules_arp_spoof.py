@@ -95,6 +95,24 @@ def test_slow_gratuitous_announcements_are_fine():
     assert alerts == []
 
 
+def test_stale_mapping_expires_like_an_arp_cache():
+    # A MAC change hours after the last sighting is a fresh observation
+    # (DHCP churn, replaced NIC), not a conflict.
+    rule = ArpSpoofRule(mapping_ttl_seconds=3600)
+    rule.process(arp_event(ts=100.0, sender_ip=GATEWAY, sender_mac=MAC_A))
+
+    alerts = rule.process(arp_event(ts=100.0 + 4000, sender_ip=GATEWAY, sender_mac=MAC_B))
+
+    assert alerts == []
+
+
+def test_mac_change_within_ttl_still_conflicts():
+    rule = ArpSpoofRule(mapping_ttl_seconds=3600)
+    rule.process(arp_event(ts=100.0, sender_ip=GATEWAY, sender_mac=MAC_A))
+    alerts = rule.process(arp_event(ts=100.0 + 3000, sender_ip=GATEWAY, sender_mac=MAC_B))
+    assert len(alerts) == 1
+
+
 def test_broadcast_and_zero_addresses_ignored():
     rule = ArpSpoofRule()
     rule.process(arp_event(ts=100.0, sender_ip=GATEWAY, sender_mac=MAC_A))

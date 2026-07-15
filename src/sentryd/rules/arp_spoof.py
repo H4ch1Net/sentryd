@@ -34,17 +34,24 @@ class ArpSpoofRule(Rule):
         self,
         gratuitous_window_seconds: float = 10.0,
         gratuitous_threshold: int = 8,
+        mapping_ttl_seconds: float = 3600.0,
     ) -> None:
         self.gratuitous_window_seconds = float(gratuitous_window_seconds)
         self.gratuitous_threshold = int(gratuitous_threshold)
+        # Like a real ARP cache, mappings expire: a MAC change after the TTL
+        # is a fresh observation, not a conflict — and expiry also bounds
+        # state growth when an attacker floods forged sender IPs.
+        self.mapping_ttl_seconds = float(mapping_ttl_seconds)
         self._mappings: dict[str, _Mapping] = {}  # ip -> authoritative MAC
         self._gratuitous: dict[str, deque[float]] = defaultdict(deque)  # mac -> ts
         self._grat_last_fired: dict[str, float] = {}
+        self._last_sweep: float | None = None
 
     def process(self, event: Event) -> list[Alert]:
         arp = event.arp
         if event.protocol != "arp" or arp is None:
             return []
+        self._maybe_sweep(event.ts)
         mac, ip = arp.sender_mac.lower(), arp.sender_ip
         if mac in _IGNORED_MACS or ip in _IGNORED_IPS:
             return []
@@ -64,6 +71,8 @@ class ArpSpoofRule(Rule):
         self, event: Event, ip: str, mac: str, is_gratuitous: bool
     ) -> list[Alert]:
         known = self._mappings.get(ip)
+        if known is not None and event.ts - known.last_seen > self.mapping_ttl_seconds:
+            known = None  # stale mapping: treat like an ARP cache expiry
         if known is None:
             self._mappings[ip] = _Mapping(mac=mac, first_seen=event.ts, last_seen=event.ts)
             return []
@@ -132,3 +141,30 @@ class ArpSpoofRule(Rule):
                 },
             )
         ]
+
+    def _maybe_sweep(self, now: float) -> None:
+        """Evict expired state (event-time paced) to stay bounded under
+        forged-ARP floods that cycle fresh MAC/IP pairs."""
+        if self._last_sweep is None:
+            self._last_sweep = now
+            return
+        if now - self._last_sweep < self.mapping_ttl_seconds:
+            return
+        self._last_sweep = now
+        for ip in [
+            ip
+            for ip, mapping in self._mappings.items()
+            if now - mapping.last_seen > self.mapping_ttl_seconds
+        ]:
+            del self._mappings[ip]
+        grat_cutoff = now - self.gratuitous_window_seconds
+        for mac in [
+            mac
+            for mac, window in self._gratuitous.items()
+            if not window or window[-1] < grat_cutoff
+        ]:
+            del self._gratuitous[mac]
+        for mac in [
+            mac for mac, ts in self._grat_last_fired.items() if ts < grat_cutoff
+        ]:
+            del self._grat_last_fired[mac]
