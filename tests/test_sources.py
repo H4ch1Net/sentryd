@@ -1,7 +1,7 @@
 """End-to-end: synthetic pcaps through PcapFileSource into the engine."""
 
 import pytest
-from conftest import benign_packets, syn_scan_packets, tcp_packet
+from conftest import arp_reply, benign_packets, syn_scan_packets, tcp_packet
 
 from sentryd.core.engine import RuleEngine
 from sentryd.rules.port_scan import PortScanRule
@@ -52,6 +52,22 @@ def test_benign_pcap_triggers_nothing(write_pcap):
     stats = engine.run(PcapFileSource(path).events())
 
     assert stats.alerts_emitted == 0
+
+
+def test_arp_spoof_pcap_triggers_alert(write_pcap):
+    packets = [
+        arp_reply("192.168.1.1", "aa:aa:aa:aa:aa:aa", "192.168.1.50", ts=1000.0),
+        arp_reply("192.168.1.1", "aa:aa:aa:aa:aa:aa", "192.168.1.51", ts=1001.0),
+        # attacker takes over the gateway's IP
+        arp_reply("192.168.1.1", "bb:bb:bb:bb:bb:bb", "192.168.1.50", ts=1005.0),
+    ]
+    path = write_pcap(packets)
+    engine = default_engine()
+
+    stats = engine.run(PcapFileSource(path).events())
+
+    assert stats.alerts_emitted == 1
+    assert stats.by_severity == {"high": 1}
 
 
 def test_suspicious_port_hit_from_pcap(write_pcap):

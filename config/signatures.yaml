@@ -18,3 +18,22 @@ rules:
   #       label: RDP
   #       severity: medium
   #       note: Remote desktop exposed to the capture segment.
+
+# Custom stateless signatures — matched against every event, no code needed.
+# All match criteria are optional; omitted criteria match everything.
+signatures: []
+# signatures:
+#   - id: sig-rdp-inbound
+#     title: Inbound RDP connection attempt
+#     severity: high
+#     confidence: 0.7
+#     note: No RDP is expected on this segment.
+#     match:
+#       protocol: tcp
+#       dst_ports: [3389, "5900-5910"]
+#       tcp_flags: S
+#       tcp_flags_not: A
+#   - id: sig-testnet-traffic
+#     title: Traffic to documentation range
+#     match:
+#       dst_cidr: 192.0.2.0/24

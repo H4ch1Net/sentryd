@@ -44,7 +44,13 @@ class Rule(ABC):
 
 
 def build_rules(config: dict) -> list[Rule]:
-    """Instantiate every enabled rule from the ``rules:`` config section."""
+    """Instantiate enabled rules from ``rules:`` plus the signature matcher.
+
+    Custom signatures live under the top-level ``signatures:`` key; when any
+    are configured, a SignatureRule is appended to evaluate them.
+    """
+    from sentryd.rules.signature import SignatureRule
+
     rules: list[Rule] = []
     for rule_id, rule_cfg in config.get("rules", {}).items():
         if rule_id not in RULE_REGISTRY:
@@ -53,4 +59,6 @@ def build_rules(config: dict) -> list[Rule]:
         if not rule_cfg.pop("enabled", True):
             continue
         rules.append(RULE_REGISTRY[rule_id](rule_cfg))
+    if config.get("signatures"):
+        rules.append(SignatureRule.from_config(config))
     return rules

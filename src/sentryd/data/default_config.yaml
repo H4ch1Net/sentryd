@@ -12,6 +12,19 @@ rules:
     window_seconds: 10
     min_distinct_targets: 15
 
+  traffic_spike:
+    enabled: true
+    bucket_seconds: 5        # traffic is totted up per host in buckets this wide
+    spike_ratio: 5           # alert when a bucket exceeds this multiple of baseline
+    min_bucket_bytes: 50000  # ...and this absolute floor (quiet hosts stay quiet)
+    ewma_alpha: 0.3          # baseline responsiveness (higher adapts faster)
+    warmup_buckets: 3        # buckets needed before a host has a baseline
+
+  arp_spoof:
+    enabled: true
+    gratuitous_window_seconds: 10
+    gratuitous_threshold: 8  # gratuitous announcements per window before flagging
+
   suspicious_port:
     enabled: true
     ports:
@@ -47,3 +60,7 @@ rules:
         label: Tor ORPort
         severity: low
         note: Tor relay traffic; may violate egress policy.
+
+# Custom stateless signatures (see rules/signature.py for the field
+# reference). None ship by default — declare yours in config/signatures.yaml.
+signatures: []
