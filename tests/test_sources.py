@@ -4,8 +4,6 @@ import pytest
 from conftest import arp_reply, benign_packets, syn_scan_packets, tcp_packet
 
 from sentryd.core.engine import RuleEngine
-from sentryd.rules.port_scan import PortScanRule
-from sentryd.rules.suspicious_port import SuspiciousPortRule
 from sentryd.rules.base import build_rules
 from sentryd.config import load_default_config
 from sentryd.sources.base import SourceError

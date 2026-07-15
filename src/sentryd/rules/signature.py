@@ -26,7 +26,7 @@ Signature fields (all match criteria optional; omitted criteria match all):
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sentryd.core.alerts import Alert, Severity
 from sentryd.core.events import Event

@@ -8,7 +8,7 @@ with hand-built values and identical in behavior across all sources.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)

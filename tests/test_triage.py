@@ -4,7 +4,6 @@ paths (no key, provider errors) are pinned down explicitly.
 """
 
 import httpx
-import pytest
 
 from sentryd.core.alerts import Alert, Severity
 from sentryd.triage.base import API_KEY_ENV, MODEL_ENV, NullTriage, create_provider
@@ -85,19 +84,23 @@ def test_successful_completion_returns_result():
 
 
 def test_http_error_degrades_to_none():
-    handler = lambda request: httpx.Response(500, json={"error": "boom"})
+    def handler(request):
+        return httpx.Response(500, json={"error": "boom"})
+
     assert mock_provider(handler).triage(sample_alert()) is None
 
 
 def test_malformed_response_degrades_to_none():
-    handler = lambda request: httpx.Response(200, json={"unexpected": True})
+    def handler(request):
+        return httpx.Response(200, json={"unexpected": True})
+
     assert mock_provider(handler).triage(sample_alert()) is None
 
 
 def test_empty_completion_degrades_to_none():
-    handler = lambda request: httpx.Response(
-        200, json={"choices": [{"message": {"content": "   "}}]}
-    )
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "   "}}]})
+
     assert mock_provider(handler).triage(sample_alert()) is None
 
 
