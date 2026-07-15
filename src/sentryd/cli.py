@@ -251,6 +251,21 @@ def dash(
 
 
 @app.command()
+def web(
+    db: Path = DbOption,
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8000, "--port", help="Listen port."),
+) -> None:
+    """Serve the web UI: filterable alert table, detail view, stats."""
+    import uvicorn
+
+    from sentryd.web.api import create_app
+
+    console.print(f"[bold]sentryd[/bold] web UI on [cyan]http://{host}:{port}[/cyan] (db: {db})")
+    uvicorn.run(create_app(db), host=host, port=port, log_level="warning")
+
+
+@app.command()
 def triage(
     alert_id: int = typer.Argument(..., help="Alert id to triage (see `alerts list`)."),
     db: Path = DbOption,

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sentryd — alerts</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>sentryd</h1>
+    <span class="tagline">rules detect &middot; AI explains</span>
+    <div id="stats" class="stats"></div>
+  </header>
+
+  <main>
+    <section class="list-pane">
+      <div class="filters">
+        <select id="filter-severity">
+          <option value="">all severities</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <select id="filter-rule"><option value="">all rules</option></select>
+        <select id="filter-status">
+          <option value="">any status</option>
+          <option value="new">new</option>
+          <option value="triaged">triaged</option>
+          <option value="dismissed">dismissed</option>
+        </select>
+        <label class="auto"><input type="checkbox" id="auto-refresh" checked> auto-refresh</label>
+      </div>
+      <table id="alert-table">
+        <thead>
+          <tr><th>id</th><th>time (UTC)</th><th>severity</th><th>rule</th>
+              <th>src</th><th>dst</th><th>count</th><th>title</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="empty" class="empty" hidden>no alerts match the current filters</p>
+    </section>
+
+    <aside id="detail" class="detail-pane" hidden>
+      <button id="detail-close" title="close">&times;</button>
+      <div id="detail-body"></div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
