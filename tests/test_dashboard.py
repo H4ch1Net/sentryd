@@ -52,7 +52,10 @@ async def test_browse_mode_picks_up_new_alerts(tmp_path):
         assert app.query_one(DataTable).row_count == 1
 
         seed_store(db, n=2)  # two more land while the dashboard is open
-        await pilot.pause(0.2)
+        for _ in range(50):  # wait for a poll tick instead of a fixed sleep
+            await pilot.pause(0.1)
+            if app.query_one(DataTable).row_count == 3:
+                break
         assert app.query_one(DataTable).row_count == 3
 
 
