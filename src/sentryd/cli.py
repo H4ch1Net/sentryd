@@ -15,6 +15,7 @@ from rich.table import Table
 from sentryd import __version__
 from sentryd.core.alerts import Alert, Severity
 from sentryd.core.cases import CaseStatus
+from sentryd.core.correlate import correlate, investigation_hint, related_alerts
 from sentryd.render import SEVERITY_STYLE, fmt_ts_utc
 from sentryd.runner import run_case
 from sentryd.sources.base import SourceError
@@ -292,31 +293,48 @@ def alerts_show(
     alert_id: int = typer.Argument(..., help="Alert id (see `alerts list`)."),
     db: Path = DbOption,
 ) -> None:
-    """Show one alert in full: metadata, raw evidence, and AI writeup if any."""
+    """Show one alert in full: what fired, why, evidence, and where to go next."""
     with AlertStore(db) as store:
         alert = store.get(alert_id)
+        related = related_alerts(store, alert) if alert else []
 
     if alert is None:
         console.print(f"[red]error:[/red] no alert with id {alert_id}")
         raise typer.Exit(code=1)
 
     style = SEVERITY_STYLE[alert.severity]
+    ports = ""
+    if alert.src_port or alert.dst_port:
+        ports = f"ports:      {alert.src_port or '?'} -> {alert.dst_port or '?'}\n"
     header = (
         f"[{style}]{alert.severity.value.upper()}[/{style}] {alert.title}\n\n"
         f"rule:       {alert.rule_id}\n"
-        f"time:       {fmt_ts_utc(alert.ts)} UTC\n"
+        f"case:       {'#' + str(alert.case_id) if alert.case_id else '-'}\n"
+        f"first seen: {fmt_ts_utc(alert.ts)} UTC\n"
+        f"last seen:  {fmt_ts_utc(alert.last_seen)} UTC\n"
         f"source:     {alert.src or '-'}\n"
         f"target:     {alert.dst or '-'}\n"
+        f"protocol:   {alert.protocol or '-'}\n"
+        f"{ports}"
         f"confidence: {alert.confidence:.2f}\n"
         f"count:      {alert.count}\n"
         f"status:     {alert.status.value}"
     )
     console.print(Panel(header, title=f"alert #{alert.id}"))
+    if alert.reason:
+        console.print(Panel(alert.reason, title="why this fired"))
     console.print(Panel(json.dumps(alert.evidence, indent=2), title="evidence"))
+    if related:
+        lines = [
+            f"#{r.id}  [{SEVERITY_STYLE[r.severity]}]{r.severity.value:<8}[/{SEVERITY_STYLE[r.severity]}] {r.rule_id}: {r.title}"
+            for r in related[:6]
+        ]
+        console.print(Panel("\n".join(lines), title="related alerts (same hosts)"))
+    console.print(Panel(investigation_hint(alert), title="suggested next step"))
     if alert.ai_summary:
         console.print(Panel(alert.ai_summary, title="AI triage"))
     else:
-        console.print("[dim]no AI triage yet — run `sentryd triage " f"{alert.id}`[/dim]")
+        console.print(f"[dim]no AI triage yet. Run `sentryd triage {alert.id}`[/dim]")
 
 
 CASE_STATUS_STYLE = {
@@ -410,6 +428,24 @@ def cases_show(
                 a.title,
             )
         console.print(table)
+
+    clusters = correlate(alerts)
+    if clusters:
+        lines = []
+        for cluster in clusters[:8]:
+            targets = ", ".join(cluster.targets[:3]) or "-"
+            if len(cluster.targets) > 3:
+                targets += f" (+{len(cluster.targets) - 3} more)"
+            sev_style = SEVERITY_STYLE[Severity(cluster.max_severity)]
+            lines.append(
+                f"[{sev_style}]{cluster.max_severity:<8}[/{sev_style}] "
+                f"[bold]{cluster.source}[/bold] -> {targets}\n"
+                f"         {cluster.chain}  "
+                f"[dim]({len(cluster.alerts)} alerts, "
+                f"{fmt_ts_utc(cluster.first_seen, date=False)} to "
+                f"{fmt_ts_utc(cluster.last_seen, date=False)} UTC)[/dim]"
+            )
+        console.print(Panel("\n".join(lines), title="correlated activity"))
 
     if case.ai_report:
         console.print(Panel(case.ai_report, title=f"AI review ({case.ai_report_at} UTC)"))
