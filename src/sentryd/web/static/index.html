@@ -28,6 +28,7 @@
     <nav class="tabs" aria-label="Views">
       <a href="#/" data-tab="dashboard">Dashboard</a>
       <a href="#/cases" data-tab="cases">Cases</a>
+      <a href="#/settings" data-tab="settings">Settings</a>
     </nav>
     <div class="appbar-actions">
       <span id="updated" class="updated" aria-live="polite"></span>
@@ -67,6 +68,17 @@
         <div class="card chart-card">
           <div class="card-head"><h2>Alerts by rule</h2></div>
           <div id="by-rule" class="rule-bars"></div>
+        </div>
+      </section>
+
+      <section class="charts">
+        <div class="card chart-card">
+          <div class="card-head"><h2>Top suspicious hosts</h2><span class="card-note">by involvement</span></div>
+          <div id="top-hosts" class="rank-list"></div>
+        </div>
+        <div class="card chart-card">
+          <div class="card-head"><h2>Top ports and services</h2></div>
+          <div id="top-ports" class="rank-list"></div>
         </div>
       </section>
 
@@ -149,6 +161,27 @@
         <div id="cases-empty" class="empty" hidden>
           <p>No cases yet.</p>
           <p class="empty-hint">Upload a capture above to create your first case.</p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ settings ============ -->
+    <section id="view-settings" hidden>
+      <div class="view-head"><h1 class="view-title">Settings</h1></div>
+      <section class="card">
+        <div class="card-head"><h2>Instance</h2></div>
+        <dl id="settings-instance" class="meta-grid settings-grid"></dl>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Detection rules</h2>
+          <span class="card-note">toggles apply to future runs, not stored alerts</span>
+        </div>
+        <div id="settings-rules" class="settings-rules"></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Appearance</h2></div>
+        <div class="settings-appearance">
+          <button class="btn ghost" id="settings-theme">Toggle light / dark theme</button>
         </div>
       </section>
     </section>

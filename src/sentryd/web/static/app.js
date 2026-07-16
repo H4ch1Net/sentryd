@@ -140,13 +140,14 @@ function parseRoute() {
   const hash = location.hash.replace(/^#\/?/, "");
   if (hash.startsWith("case/")) return { view: "case", id: Number(hash.slice(5)) };
   if (hash === "cases") return { view: "cases" };
+  if (hash === "settings") return { view: "settings" };
   return { view: "dashboard" };
 }
 
 function navigate() {
   const route = parseRoute();
   state.route = route.view;
-  for (const view of ["dashboard", "cases", "case"]) {
+  for (const view of ["dashboard", "cases", "case", "settings"]) {
     $(`#view-${view}`).hidden = view !== route.view;
   }
   document.querySelectorAll(".tabs a").forEach((a) => {
@@ -162,6 +163,8 @@ function navigate() {
     loadCaseDetail(route.id).catch((e) => toast(e.message));
   } else if (route.view === "cases") {
     refreshCases().catch((e) => toast(e.message));
+  } else if (route.view === "settings") {
+    loadSettings().catch((e) => toast(e.message));
   } else {
     refreshDashboard().catch(() => {});
   }
@@ -219,6 +222,56 @@ async function refreshStats() {
     }
   }
   renderRuleBars(stats.by_rule);
+  renderTopHosts($("#top-hosts"), stats.top_hosts || []);
+  renderTopPorts($("#top-ports"), stats.top_ports || []);
+}
+
+const PORT_LABELS = {
+  23: "Telnet", 2323: "Telnet alt", 4444: "Metasploit", 5555: "ADB",
+  6667: "IRC", 1337: "backdoor", 31337: "Back Orifice", 9001: "Tor",
+  3389: "RDP", 445: "SMB", 22: "SSH", 80: "HTTP", 443: "HTTPS", 53: "DNS",
+};
+
+function renderRankList(container, rows, { max, label, meta, onClick }) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="chart-empty">No data yet</div>`;
+    return;
+  }
+  container.innerHTML = rows
+    .map((row, i) => {
+      const width = max ? (row._value / max) * 100 : 0;
+      return `<div class="rank-row" data-idx="${i}">
+        <span class="rank-label mono">${label(row)}</span>
+        <span class="rule-track"><span class="rule-fill" style="width:${width}%"></span></span>
+        <span class="rank-meta">${meta(row)}</span>
+      </div>`;
+    })
+    .join("");
+  if (onClick) {
+    for (const el of container.querySelectorAll(".rank-row")) {
+      el.style.cursor = "pointer";
+      el.addEventListener("click", () => onClick(rows[Number(el.dataset.idx)]));
+    }
+  }
+}
+
+function renderTopHosts(container, hosts) {
+  const max = Math.max(...hosts.map((h) => h.score), 1);
+  renderRankList(container, hosts.map((h) => ({ ...h, _value: h.score })), {
+    max,
+    label: (h) => esc(h.host),
+    meta: (h) => `${h.alerts} alert${h.alerts === 1 ? "" : "s"}`,
+    onClick: (h) => openHostDrawer(h.host),
+  });
+}
+
+function renderTopPorts(container, ports) {
+  const max = Math.max(...ports.map((p) => p.alerts), 1);
+  renderRankList(container, ports.map((p) => ({ ...p, _value: p.alerts })), {
+    max,
+    label: (p) => `${p.port}${PORT_LABELS[p.port] ? " " + PORT_LABELS[p.port] : ""}`,
+    meta: (p) => `${p.alerts} alert${p.alerts === 1 ? "" : "s"}`,
+  });
 }
 
 function renderRuleBars(byRule) {
@@ -612,6 +665,65 @@ async function loadCaseDetail(caseId) {
     }
   });
 }
+
+/* ============ settings ============ */
+
+async function loadSettings() {
+  const [status, rules] = await Promise.all([
+    fetchJSON("/api/status"),
+    fetchJSON("/api/rules"),
+  ]);
+
+  const ai = status.ai.available
+    ? `<span class="status-badge complete">configured (${esc(status.ai.provider)})</span>`
+    : `<span class="status-badge failed">not configured</span>`;
+  $("#settings-instance").innerHTML = `
+    <dt>Version</dt><dd class="mono">sentryd ${esc(status.version)}</dd>
+    <dt>AI triage</dt><dd>${ai}</dd>
+    <dt>Database</dt><dd class="mono">${esc(status.db_path)}</dd>
+    <dt>Cases</dt><dd>${status.cases}</dd>
+    <dt>Alerts</dt><dd>${status.alerts}</dd>`;
+
+  const rows = rules.rules
+    .map((r) => {
+      const off = !r.effective_enabled;
+      const reason = !r.config_enabled ? " (off in config)" : "";
+      return `<div class="rule-toggle">
+        <label class="switch">
+          <input type="checkbox" data-rule="${esc(r.rule_id)}" ${off ? "" : "checked"}
+            ${!r.config_enabled ? "disabled" : ""}>
+          <span class="slider"></span>
+        </label>
+        <span class="rule-toggle-name mono">${esc(r.rule_id)}${reason}</span>
+      </div>`;
+    })
+    .join("");
+  const sig = rules.signatures.length
+    ? `<div class="rule-toggle">
+         <label class="switch">
+           <input type="checkbox" data-rule="signature" ${rules.disabled.includes("signature") ? "" : "checked"}>
+           <span class="slider"></span>
+         </label>
+         <span class="rule-toggle-name mono">signature (${rules.signatures.length})</span>
+       </div>`
+    : `<p class="empty-inline">No custom signatures configured.</p>`;
+  $("#settings-rules").innerHTML = rows + sig;
+
+  for (const box of $("#settings-rules").querySelectorAll("input[data-rule]")) {
+    box.addEventListener("change", async () => {
+      const disabled = !box.checked;
+      try {
+        await send(`/api/rules/${box.dataset.rule}/toggle?disabled=${disabled}`);
+        toast(`${box.dataset.rule} ${disabled ? "disabled" : "enabled"}`, "ok");
+      } catch (err) {
+        box.checked = !box.checked;
+        toast(err.message);
+      }
+    });
+  }
+}
+
+$("#settings-theme").addEventListener("click", () => $("#theme-toggle").click());
 
 /* ============ drawers ============ */
 
