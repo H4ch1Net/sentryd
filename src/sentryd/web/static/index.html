@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>sentryd — alert console</title>
+  <title>sentryd console</title>
   <link rel="stylesheet" href="style.css">
   <script>
     // Apply the saved theme before first paint to avoid a flash.
@@ -22,9 +22,13 @@
       </svg>
       <div class="brand-text">
         <span class="brand-name">sentryd</span>
-        <span class="brand-sub">network anomaly detection</span>
+        <span class="brand-sub">network triage console</span>
       </div>
     </div>
+    <nav class="tabs" aria-label="Views">
+      <a href="#/" data-tab="dashboard">Dashboard</a>
+      <a href="#/cases" data-tab="cases">Cases</a>
+    </nav>
     <div class="appbar-actions">
       <span id="updated" class="updated" aria-live="polite"></span>
       <label class="toggle">
@@ -40,95 +44,137 @@
   </header>
 
   <main>
-    <section class="kpis" aria-label="Summary">
-      <div class="tile">
-        <span class="tile-label">Total alerts</span>
-        <span class="tile-value" id="kpi-total">–</span>
-        <span class="tile-hint" id="kpi-total-hint"></span>
+    <!-- ============ dashboard ============ -->
+    <section id="view-dashboard" hidden>
+      <div class="view-head">
+        <h1 class="view-title">Alert dashboard</h1>
+        <select id="case-filter" aria-label="Scope to case"><option value="">All cases</option></select>
       </div>
-      <div class="tile">
-        <span class="tile-label">High &amp; critical</span>
-        <span class="tile-value" id="kpi-severe">–</span>
-        <span class="tile-hint" id="kpi-severe-hint"></span>
-      </div>
-      <div class="tile">
-        <span class="tile-label">Sources observed</span>
-        <span class="tile-value" id="kpi-sources">–</span>
-        <span class="tile-hint">distinct offending hosts</span>
-      </div>
-      <div class="tile">
-        <span class="tile-label">AI triaged</span>
-        <span class="tile-value" id="kpi-triaged">–</span>
-        <span class="tile-hint" id="kpi-triaged-hint"></span>
-      </div>
-    </section>
 
-    <section class="charts">
-      <div class="card chart-card">
-        <div class="card-head">
-          <h2>Alert activity</h2>
-          <span class="card-note">event time</span>
-        </div>
-        <div id="timeline" class="timeline" role="img" aria-label="Alert counts over time"></div>
-        <div id="timeline-axis" class="timeline-axis"></div>
-      </div>
-      <div class="card chart-card">
-        <div class="card-head">
-          <h2>Alerts by rule</h2>
-        </div>
-        <div id="by-rule" class="rule-bars"></div>
-      </div>
-    </section>
+      <section class="kpis" aria-label="Summary">
+        <div class="tile"><span class="tile-label">Total alerts</span><span class="tile-value" id="kpi-total">-</span><span class="tile-hint" id="kpi-total-hint"></span></div>
+        <div class="tile"><span class="tile-label">High &amp; critical</span><span class="tile-value" id="kpi-severe">-</span><span class="tile-hint" id="kpi-severe-hint"></span></div>
+        <div class="tile"><span class="tile-label">Sources observed</span><span class="tile-value" id="kpi-sources">-</span><span class="tile-hint">distinct offending hosts</span></div>
+        <div class="tile"><span class="tile-label">AI triaged</span><span class="tile-value" id="kpi-triaged">-</span><span class="tile-hint" id="kpi-triaged-hint"></span></div>
+      </section>
 
-    <section class="card table-card">
-      <div class="card-head table-head">
-        <h2>Alerts</h2>
-        <div class="filters">
-          <input type="search" id="filter-search" placeholder="Filter by host or title…" aria-label="Search alerts">
-          <select id="filter-severity" aria-label="Filter by severity">
-            <option value="">All severities</option>
-            <option value="critical">Critical</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-          <select id="filter-rule" aria-label="Filter by rule"><option value="">All rules</option></select>
-          <select id="filter-status" aria-label="Filter by status">
-            <option value="">Any status</option>
-            <option value="new">New</option>
-            <option value="triaged">Triaged</option>
-            <option value="dismissed">Dismissed</option>
-          </select>
+      <section class="charts">
+        <div class="card chart-card">
+          <div class="card-head"><h2>Alert activity</h2><span class="card-note">event time</span></div>
+          <div id="timeline" class="timeline" role="img" aria-label="Alert counts over time"></div>
+          <div id="timeline-axis" class="timeline-axis"></div>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table id="alert-table">
-          <thead>
-            <tr>
+        <div class="card chart-card">
+          <div class="card-head"><h2>Alerts by rule</h2></div>
+          <div id="by-rule" class="rule-bars"></div>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-head table-head">
+          <h2>Alerts</h2>
+          <div class="filters">
+            <input type="search" id="filter-search" placeholder="Filter by host or title" aria-label="Search alerts">
+            <select id="filter-severity" aria-label="Filter by severity">
+              <option value="">All severities</option>
+              <option value="critical">Critical</option><option value="high">High</option>
+              <option value="medium">Medium</option><option value="low">Low</option>
+            </select>
+            <select id="filter-rule" aria-label="Filter by rule"><option value="">All rules</option></select>
+            <select id="filter-status" aria-label="Filter by status">
+              <option value="">Any status</option>
+              <option value="new">New</option><option value="triaged">Triaged</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+            <a class="btn ghost" id="export-alerts-csv" href="/api/export/alerts?format=csv" download>Export CSV</a>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="alert-table">
+            <thead><tr>
               <th class="num">ID</th><th>Time (UTC)</th><th>Severity</th><th>Rule</th>
               <th>Source</th><th>Target</th><th class="num">Count</th><th>Title</th><th>AI</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="empty" class="empty" hidden>
+          <p>No alerts match the current filters.</p>
+          <p class="empty-hint">Upload a capture on the <a href="#/cases">Cases</a> page or run
+            <code>sentryd replay tests/fixtures/portscan.pcap</code></p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ cases ============ -->
+    <section id="view-cases" hidden>
+      <div class="view-head"><h1 class="view-title">Cases</h1></div>
+
+      <section class="card upload-card">
+        <div class="card-head"><h2>Analyze a capture</h2><span class="card-note">.pcap / .pcapng, up to 200 MB</span></div>
+        <div class="upload-body">
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload a capture file">
+            <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+              <path d="M12 16 V4 M7 9 L12 4 L17 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4 15 v4 a1 1 0 0 0 1 1 h14 a1 1 0 0 0 1 -1 v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+            <p><strong>Drop a capture here</strong> or click to choose a file</p>
+            <p class="dropzone-hint">A new case is created and replayed automatically</p>
+            <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+          </div>
+          <div id="upload-status" class="upload-status" hidden></div>
+          <details class="server-path">
+            <summary>Advanced: replay a server-side path</summary>
+            <div class="server-path-row">
+              <input type="text" id="server-path" placeholder="/path/on/server/capture.pcap" aria-label="Server-side pcap path">
+              <button class="btn" id="server-path-go">Replay</button>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-head table-head"><h2>All cases</h2>
+          <label class="toggle"><input type="checkbox" id="show-archived"> <span>Show archived</span></label>
+        </div>
+        <div class="table-wrap">
+          <table id="case-table">
+            <thead><tr>
+              <th class="num">ID</th><th>Name</th><th>Source</th><th>Status</th>
+              <th class="num">Events</th><th class="num">Alerts</th><th>Created (UTC)</th><th>AI</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="cases-empty" class="empty" hidden>
+          <p>No cases yet.</p>
+          <p class="empty-hint">Upload a capture above to create your first case.</p>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ case detail ============ -->
+    <section id="view-case" hidden>
+      <div class="view-head">
+        <a class="btn ghost back" href="#/cases">&larr; Cases</a>
+        <h1 class="view-title" id="case-title">Case</h1>
+        <span id="case-status-chip"></span>
       </div>
-      <div id="empty" class="empty" hidden>
-        <p>No alerts match the current filters.</p>
-        <p class="empty-hint">Generate some with <code>sentryd replay tests/fixtures/portscan.pcap</code></p>
-      </div>
+      <div id="case-body"></div>
     </section>
   </main>
 
   <div id="scrim" class="scrim" hidden></div>
-  <aside id="drawer" class="drawer" hidden aria-label="Alert detail">
+  <aside id="drawer" class="drawer" hidden aria-label="Detail">
     <div class="drawer-head">
       <div id="drawer-title"></div>
-      <button id="drawer-close" class="icon-btn" aria-label="Close detail">✕</button>
+      <button id="drawer-close" class="icon-btn" aria-label="Close detail">&#10005;</button>
     </div>
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
 
   <div id="tooltip" class="tooltip" hidden></div>
+  <div id="toast" class="toast" hidden></div>
 
   <script src="app.js"></script>
 </body>
