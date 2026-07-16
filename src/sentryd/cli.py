@@ -341,6 +341,142 @@ def alerts_show(
 
 export_app = typer.Typer(help="Export alerts and case reports.", no_args_is_help=True)
 app.add_typer(export_app, name="export")
+rules_app = typer.Typer(help="Inspect, lint, and test detection rules.", no_args_is_help=True)
+app.add_typer(rules_app, name="rules")
+
+
+def _rule_doc(rule_id: str) -> str:
+    import sys
+
+    from sentryd.rules.base import RULE_REGISTRY
+
+    cls = RULE_REGISTRY[rule_id]
+    return (sys.modules[cls.__module__].__doc__ or "").strip()
+
+
+@rules_app.command("list")
+def rules_list(config: Optional[Path] = ConfigOption) -> None:
+    """List every rule with its enabled state and effective settings."""
+    from sentryd.config import load_config
+    from sentryd.rules.base import RULE_REGISTRY
+
+    cfg = load_config(config)
+    table = Table(title="detection rules")
+    for col in ("rule", "enabled", "settings", "summary"):
+        table.add_column(col, overflow="fold")
+    for rule_id in sorted(RULE_REGISTRY):
+        section = dict(cfg.get("rules", {}).get(rule_id) or {})
+        enabled = section.pop("enabled", True)
+        summary = _rule_doc(rule_id).splitlines()[0] if _rule_doc(rule_id) else ""
+        table.add_row(
+            rule_id,
+            "[green]yes[/green]" if enabled else "[red]no[/red]",
+            ", ".join(f"{k}={v}" for k, v in section.items()) or "-",
+            summary,
+        )
+    signatures = cfg.get("signatures", [])
+    table.add_row(
+        "signature",
+        "[green]yes[/green]" if signatures else "[dim]no signatures configured[/dim]",
+        f"{len(signatures)} signature(s)",
+        "Config-driven stateless matcher (top-level signatures: key).",
+    )
+    console.print(table)
+
+
+@rules_app.command("explain")
+def rules_explain(
+    rule_id: str = typer.Argument(..., help="Rule id, e.g. port_scan."),
+    config: Optional[Path] = ConfigOption,
+) -> None:
+    """Explain what a rule detects and show its current thresholds."""
+    from sentryd.config import load_config
+    from sentryd.rules.base import RULE_REGISTRY
+
+    if rule_id not in RULE_REGISTRY:
+        known = ", ".join(sorted(RULE_REGISTRY))
+        console.print(f"[red]error:[/red] unknown rule {rule_id!r} (known: {known})")
+        raise typer.Exit(code=1)
+    console.print(Panel(_rule_doc(rule_id), title=f"rule: {rule_id}"))
+    section = dict(load_config(config).get("rules", {}).get(rule_id) or {})
+    enabled = section.pop("enabled", True)
+    lines = [f"enabled: {'yes' if enabled else 'no'}"]
+    lines += [f"{key}: {value}" for key, value in section.items()]
+    console.print(Panel("\n".join(lines), title="effective settings"))
+    console.print(
+        "[dim]override in config/signatures.yaml under rules: "
+        f"{rule_id}: (defaults ship in src/sentryd/data/default_config.yaml)[/dim]"
+    )
+
+
+@rules_app.command("lint")
+def rules_lint(config: Optional[Path] = ConfigOption) -> None:
+    """Validate the effective configuration: YAML shape, rule settings,
+    and custom signature definitions."""
+    from sentryd.config import DEFAULT_USER_CONFIG, load_config
+    from sentryd.rules.base import build_rules
+
+    source = config or (DEFAULT_USER_CONFIG if DEFAULT_USER_CONFIG.is_file() else None)
+    label = str(source) if source else "packaged defaults only"
+    try:
+        cfg = load_config(config)
+        rules = build_rules(cfg)
+    except Exception as exc:
+        console.print(f"[red]FAIL[/red] {label}: {exc}")
+        raise typer.Exit(code=1)
+    sig_count = len(cfg.get("signatures", []))
+    console.print(
+        f"[green]OK[/green] {label}: {len(rules)} rule(s) build cleanly"
+        f" ({sig_count} custom signature(s))"
+    )
+
+
+@rules_app.command("test")
+def rules_test(
+    rule: str = typer.Option(..., "--rule", help="Rule id to run in isolation."),
+    pcap: Path = typer.Option(..., "--pcap", help="Capture to run it against."),
+    config: Optional[Path] = ConfigOption,
+) -> None:
+    """Run ONE rule against a pcap and print what it would alert on.
+
+    Nothing is stored; this is a dry run for tuning thresholds and writing
+    signatures.
+    """
+    from sentryd.config import load_config
+    from sentryd.core.engine import RuleEngine
+    from sentryd.rules.base import RULE_REGISTRY
+    from sentryd.rules.signature import SignatureRule
+
+    cfg = load_config(config)
+    if rule == "signature":
+        if not cfg.get("signatures"):
+            console.print("[red]error:[/red] no signatures configured to test")
+            raise typer.Exit(code=1)
+        instance = SignatureRule.from_config(cfg)
+    elif rule in RULE_REGISTRY:
+        section = dict(cfg.get("rules", {}).get(rule) or {})
+        section.pop("enabled", None)
+        instance = RULE_REGISTRY[rule].from_config(section)
+    else:
+        known = ", ".join(sorted(RULE_REGISTRY) + ["signature"])
+        console.print(f"[red]error:[/red] unknown rule {rule!r} (known: {known})")
+        raise typer.Exit(code=1)
+
+    engine = RuleEngine(
+        rules=[instance],
+        sinks=[ConsoleSink()],
+        cooldown_seconds=cfg.get("engine", {}).get("cooldown_seconds", 60),
+    )
+    try:
+        stats = engine.run(PcapFileSource(pcap).events())
+    except SourceError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"\n[bold]{rule}[/bold] on {pcap}: {stats.events_processed} events, "
+        f"{stats.alerts_emitted} alert(s), {stats.alerts_deduplicated} duplicates merged "
+        f"[dim](dry run, nothing stored)[/dim]"
+    )
 
 
 def _write_export(content: str, output: Optional[Path], what: str) -> None:

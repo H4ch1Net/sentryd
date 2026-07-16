@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, ClassVar
+from typing import ClassVar
 
 from sentryd.core.alerts import Alert
 from sentryd.core.events import Event
 
-# rule_id -> factory(rule_config: dict) -> Rule
-RULE_REGISTRY: dict[str, Callable[[dict], "Rule"]] = {}
+# rule_id -> Rule class (instantiate via cls.from_config(section))
+RULE_REGISTRY: dict[str, type["Rule"]] = {}
 
 
 def register(cls: type["Rule"]) -> type["Rule"]:
     """Class decorator adding a rule to the registry under its rule_id."""
-    RULE_REGISTRY[cls.rule_id] = cls.from_config
+    RULE_REGISTRY[cls.rule_id] = cls
     return cls
 
 
@@ -58,7 +58,7 @@ def build_rules(config: dict) -> list[Rule]:
         rule_cfg = dict(rule_cfg or {})
         if not rule_cfg.pop("enabled", True):
             continue
-        rules.append(RULE_REGISTRY[rule_id](rule_cfg))
+        rules.append(RULE_REGISTRY[rule_id].from_config(rule_cfg))
     if config.get("signatures"):
         rules.append(SignatureRule.from_config(config))
     return rules
