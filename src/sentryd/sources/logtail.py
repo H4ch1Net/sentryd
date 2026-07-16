@@ -1,6 +1,6 @@
 """Log file source: replay or follow (tail -f) a JSON-lines traffic log.
 
-Each line is a JSON object describing one network record — the shape many
+Each line is a JSON object describing one network record, the shape many
 sensors (or a quick export script) can produce:
 
     {"ts": 1700000000.5, "protocol": "tcp", "src_ip": "10.0.0.5",
@@ -9,7 +9,7 @@ sensors (or a quick export script) can produce:
 
 Field notes: ``ts`` accepts an epoch float or an ISO-8601 string and
 defaults to the current time; everything else defaults to unknown/empty.
-Lines that aren't valid JSON objects are counted and skipped — a log file
+Lines that aren't valid JSON objects are counted and skipped, a log file
 mixing other output stays usable.
 """
 
@@ -71,7 +71,7 @@ class LogTailSource:
     ``follow=False`` reads the existing content and stops (useful for replay
     and tests); ``follow=True`` then waits for appended lines like tail -f.
     ``from_start=False`` skips existing content and only watches for new
-    lines — classic tail semantics.
+    lines, classic tail semantics.
     """
 
     def __init__(
@@ -105,7 +105,7 @@ class LogTailSource:
                         # switch to the new content from its beginning.
                         handle.close()
                         handle = self.path.open("r", errors="replace")
-                        log.info("log file %s rotated — following new file", self.path)
+                        log.info("log file %s rotated, following new file", self.path)
                         continue
                     time.sleep(self.poll_interval)
                     continue

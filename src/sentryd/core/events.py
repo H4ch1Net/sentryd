@@ -2,7 +2,7 @@
 
 Every input source (pcap replay, live sniffing, log tailing) converts its
 records into :class:`Event` before anything else sees them. Detection rules
-consume only Events — never scapy packets — which keeps rules unit-testable
+consume only Events, never scapy packets, which keeps rules unit-testable
 with hand-built values and identical in behavior across all sources.
 """
 

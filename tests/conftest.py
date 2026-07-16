@@ -2,7 +2,7 @@
 
 Rule unit tests feed Events directly (fast, no scapy in the loop).
 Integration tests craft real packets with scapy, write them to a temp pcap,
-and replay them through PcapFileSource — exercising the same path as
+and replay them through PcapFileSource, exercising the same path as
 `sentryd replay`.
 """
 

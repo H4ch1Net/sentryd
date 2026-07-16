@@ -1,4 +1,4 @@
-"""CLI-level tests via Typer's runner — the same paths a demo exercises."""
+"""CLI-level tests via Typer's runner, the same paths a demo exercises."""
 
 from pathlib import Path
 

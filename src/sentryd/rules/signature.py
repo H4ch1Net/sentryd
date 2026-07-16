@@ -1,8 +1,8 @@
 """Generic config-driven signature matching.
 
 The stateful rules (port_scan, traffic_spike, arp_spoof) live in code because
-they need sliding windows and baselines. Everything stateless — "flag TCP
-SYNs from this CIDR to that port range" — belongs here instead: signatures
+they need sliding windows and baselines. Everything stateless, "flag TCP
+SYNs from this CIDR to that port range", belongs here instead: signatures
 are declared under the top-level ``signatures:`` key in the config file and
 never require code changes.
 

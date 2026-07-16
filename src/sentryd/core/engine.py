@@ -38,7 +38,7 @@ class RuleEngine:
     """Runs every registered rule over each event and routes alerts to sinks.
 
     Deduplication: alerts sharing ``(rule_id, src, dst)`` within
-    ``cooldown_seconds`` (event time, not wall clock — so pcap replay behaves
+    ``cooldown_seconds`` (event time, not wall clock, so pcap replay behaves
     identically to live capture) are merged into the original alert by
     incrementing its ``count`` instead of emitting again.
     """
@@ -101,9 +101,9 @@ class RuleEngine:
     def _maintain(self, now: float) -> None:
         """Periodic upkeep, paced by event time (once per cooldown window).
 
-        Two jobs: persist pending count updates mid-run — an endless live
+        Two jobs: persist pending count updates mid-run, an endless live
         source never reaches the end-of-run flush, and stored alerts would
-        otherwise show stale counts until Ctrl-C — and evict expired dedup
+        otherwise show stale counts until Ctrl-C, and evict expired dedup
         entries so the map doesn't grow unboundedly over a long capture
         (one entry per distinct src/dst pair would otherwise live forever).
         """

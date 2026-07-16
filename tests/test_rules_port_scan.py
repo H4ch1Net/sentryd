@@ -40,7 +40,7 @@ def test_below_threshold_is_silent():
 
 def test_slow_scan_outside_window_is_silent():
     rule = PortScanRule(window_seconds=10, min_distinct_targets=15)
-    # 30 ports but spread over 10 minutes — never 15 within any 10s window.
+    # 30 ports but spread over 10 minutes, never 15 within any 10s window.
     assert run_events(rule, scan_events(30, interval=20.0)) == []
 
 
@@ -63,7 +63,7 @@ def test_horizontal_sweep_detected():
     alerts = run_events(rule, events)
     assert len(alerts) == 1
     assert alerts[0].evidence["scan_type"] == "horizontal"
-    assert alerts[0].dst is None  # many targets — no single victim host
+    assert alerts[0].dst is None  # many targets, no single victim host
     assert alerts[0].evidence["sample_ports"] == [445]
 
 
@@ -102,6 +102,6 @@ def test_idle_sources_are_swept():
 
 def test_sources_tracked_independently():
     rule = PortScanRule(window_seconds=10, min_distinct_targets=15)
-    # Two sources each probe 10 ports — 20 total, but neither crosses 15.
+    # Two sources each probe 10 ports, 20 total, but neither crosses 15.
     events = scan_events(10, src="10.0.0.1") + scan_events(10, src="10.0.0.2")
     assert run_events(rule, events) == []

@@ -1,4 +1,4 @@
-"""Offline pcap replay — the primary safe demo mode.
+"""Offline pcap replay, the primary safe demo mode.
 
 Streams packets with scapy's PcapReader rather than loading the whole file,
 so large captures replay in constant memory.

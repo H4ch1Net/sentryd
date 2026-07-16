@@ -53,7 +53,7 @@ def test_spike_after_steady_baseline_alerts():
 def test_steady_high_volume_is_normal():
     rule = make_rule()
     alerts = []
-    for i in range(20):  # consistently chatty host — that's its baseline
+    for i in range(20):  # consistently chatty host, that's its baseline
         alerts += feed(rule, "10.0.0.5", ts=i * 5.0, total_bytes=100_000)
     assert alerts == []
 
@@ -63,7 +63,7 @@ def test_small_spike_below_floor_is_ignored():
     alerts = []
     for i in range(5):
         alerts += feed(rule, "10.0.0.5", ts=i * 5.0, total_bytes=100)
-    # 50x the baseline, but only 5 KB in absolute terms — below the floor.
+    # 50x the baseline, but only 5 KB in absolute terms, below the floor.
     alerts += feed(rule, "10.0.0.5", ts=25.0, total_bytes=5_000)
     alerts += feed(rule, "10.0.0.5", ts=30.0, total_bytes=100)
     assert alerts == []
@@ -84,7 +84,7 @@ def test_hosts_have_independent_baselines():
     for i in range(5):
         alerts += feed(rule, "10.0.0.5", ts=i * 5.0, total_bytes=1000)  # quiet
         alerts += feed(rule, "10.0.0.9", ts=i * 5.0, total_bytes=200_000)  # busy
-    # The busy host's normal volume would be a huge spike for the quiet one —
+    # The busy host's normal volume would be a huge spike for the quiet one -
     # but baselines are per-host, so neither alerts.
     alerts += feed(rule, "10.0.0.9", ts=25.0, total_bytes=210_000)
     alerts += feed(rule, "10.0.0.9", ts=30.0, total_bytes=200_000)

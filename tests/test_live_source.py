@@ -1,4 +1,4 @@
-"""Live capture error handling — the paths that matter without root."""
+"""Live capture error handling, the paths that matter without root."""
 
 import pytest
 

@@ -21,7 +21,7 @@ def register_scapy_layers() -> None:
     Load-bearing for every raw-packet source: without it, readers decode
     frames as Raw, packet_to_event() returns None for all of them, and
     detection silently sees zero events. Call before opening any reader
-    or capture socket. (Kept out of module import time — scapy is heavy
+    or capture socket. (Kept out of module import time, scapy is heavy
     and the log source doesn't need it.)
     """
     import scapy.layers.inet  # noqa: F401

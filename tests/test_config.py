@@ -34,7 +34,7 @@ def test_rule_can_be_disabled(tmp_path):
 
 
 def test_empty_yaml_section_keeps_defaults(tmp_path):
-    # "rules:" with nothing under it parses as None — that must mean
+    # "rules:" with nothing under it parses as None, that must mean
     # "no override", not "delete every rule".
     path = tmp_path / "override.yaml"
     path.write_text("rules:\n")

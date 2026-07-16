@@ -1,5 +1,5 @@
 """Triage layer tests. The OpenRouter provider is exercised against a mock
-HTTP transport — no network, no real key — and the graceful-degradation
+HTTP transport, no network, no real key, and the graceful-degradation
 paths (no key, provider errors) are pinned down explicitly.
 """
 

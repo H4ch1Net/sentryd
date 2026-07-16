@@ -1,7 +1,7 @@
 """Live interface capture (requires root/CAP_NET_RAW).
 
 The socket is opened eagerly in the caller's thread so permission problems
-surface as a clean SourceError before any capture starts — the CLI turns
+surface as a clean SourceError before any capture starts, the CLI turns
 that into actionable advice instead of a traceback.
 """
 
@@ -29,7 +29,7 @@ class LiveCaptureSource:
             )
         except PermissionError as exc:
             raise SourceError(
-                "live capture needs root (or CAP_NET_RAW) — rerun with sudo, "
+                "live capture needs root (or CAP_NET_RAW), rerun with sudo, "
                 "or demo offline with: sentryd replay tests/fixtures/portscan.pcap"
             ) from exc
         except OSError as exc:

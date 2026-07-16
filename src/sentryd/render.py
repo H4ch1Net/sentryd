@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from sentryd.core.alerts import Severity
 
-# rich/Textual style per severity — keep every Severity member covered.
+# rich/Textual style per severity, keep every Severity member covered.
 SEVERITY_STYLE: dict[Severity, str] = {
     Severity.LOW: "cyan",
     Severity.MEDIUM: "yellow",

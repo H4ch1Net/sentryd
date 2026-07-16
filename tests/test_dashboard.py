@@ -1,4 +1,4 @@
-"""Dashboard tests via textual's pilot — headless, no real terminal."""
+"""Dashboard tests via textual's pilot, headless, no real terminal."""
 
 from pathlib import Path
 

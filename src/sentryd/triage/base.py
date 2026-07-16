@@ -1,6 +1,6 @@
 """AI triage provider interface.
 
-The triage layer annotates alerts that already exist — it is optional by
+The triage layer annotates alerts that already exist, it is optional by
 design. Detection never waits on it, and every failure mode (no API key,
 network down, provider error) degrades to "no writeup", never to a broken
 alert. ``create_provider()`` encodes that: no key means NullTriage.
@@ -56,7 +56,7 @@ class NullTriage:
 def create_provider() -> TriageProvider:
     """Build the configured provider from the environment (.env is honored).
 
-    Missing API key is not an error — it selects NullTriage, keeping the
+    Missing API key is not an error, it selects NullTriage, keeping the
     whole detection pipeline fully functional without any AI dependency.
     """
     from dotenv import load_dotenv

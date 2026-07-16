@@ -1,7 +1,7 @@
 /* sentryd web console.
    Tokens follow the validated reference palette: light/dark surfaces, ink
    roles, one sequential hue for magnitude, and a fixed status palette for
-   severity (always paired with a text label — never color alone). */
+   severity (always paired with a text label, never color alone). */
 
 :root {
   color-scheme: light;

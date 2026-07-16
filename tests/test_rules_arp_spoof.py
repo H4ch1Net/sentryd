@@ -87,7 +87,7 @@ def test_gratuitous_burst_fires_flood_alert():
 def test_slow_gratuitous_announcements_are_fine():
     rule = ArpSpoofRule(gratuitous_window_seconds=10, gratuitous_threshold=8)
     alerts = []
-    for i in range(20):  # one announcement per minute — routine
+    for i in range(20):  # one announcement per minute, routine
         alerts += rule.process(
             arp_event(ts=100.0 + i * 60, sender_ip=GATEWAY, sender_mac=MAC_A,
                       target_ip=GATEWAY, op=1)

@@ -3,10 +3,10 @@
 Two modes, same widgets:
 
 - **browse** (default): shows alerts already in the SQLite store and polls
-  for new ones — pair it with a live `sentryd sniff` in another terminal.
+  for new ones, pair it with a live `sentryd sniff` in another terminal.
 - **playback** (``--pcap``): replays a capture through the engine in a
   background thread, pacing packets by their timestamps so alerts appear on
-  screen as they "happened" — built for screen-recorded demos.
+  screen as they "happened", built for screen-recorded demos.
 
 Detection runs exactly as in the headless CLI; the dashboard is only another
 consumer of alerts.
@@ -85,7 +85,7 @@ class AlertDetail(Screen):
                 )
             else:
                 yield Static(
-                    Text(f"no AI triage yet — run: sentryd triage {a.id}", style="dim"),
+                    Text(f"no AI triage yet, run: sentryd triage {a.id}", style="dim"),
                     classes="detail-block",
                 )
         yield Footer()
@@ -181,7 +181,7 @@ class DashboardApp(App):
                 return
             if kind == "done":
                 self._replay_done = True
-                self.sub_title = f"replay finished — alerts stored in {self.db_path}"
+                self.sub_title = f"replay finished, alerts stored in {self.db_path}"
             elif kind == "new":
                 self._add_alert(alert)
             elif kind == "update":

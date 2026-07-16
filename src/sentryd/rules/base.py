@@ -23,7 +23,7 @@ class Rule(ABC):
 
     Rules may keep internal state (sliding windows, seen-maps) but must be
     pure functions of the event stream: same events in, same alerts out.
-    They consume normalized Events only — never raw packets — and return
+    They consume normalized Events only, never raw packets, and return
     fully-formed Alerts with severity, confidence, and evidence attached.
     """
 

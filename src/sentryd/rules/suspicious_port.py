@@ -1,6 +1,6 @@
 """Suspicious port usage: connection attempts to known-bad/unexpected ports.
 
-Entirely config-driven — the watchlist lives in signatures.yaml, each entry
+Entirely config-driven, the watchlist lives in signatures.yaml, each entry
 carrying its own label, severity, and optional analyst note.
 """
 

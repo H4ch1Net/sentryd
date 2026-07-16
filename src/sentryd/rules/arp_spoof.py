@@ -1,7 +1,7 @@
 """ARP spoofing detection.
 
 Primary signal: an IP address announcing itself (ARP reply or gratuitous
-ARP) with a different MAC than previously recorded — the classic
+ARP) with a different MAC than previously recorded, the classic
 cache-poisoning pattern. Secondary signal: a burst of gratuitous ARP
 announcements from one MAC, the noisy way poisoning tools keep caches primed.
 """
@@ -39,7 +39,7 @@ class ArpSpoofRule(Rule):
         self.gratuitous_window_seconds = float(gratuitous_window_seconds)
         self.gratuitous_threshold = int(gratuitous_threshold)
         # Like a real ARP cache, mappings expire: a MAC change after the TTL
-        # is a fresh observation, not a conflict — and expiry also bounds
+        # is a fresh observation, not a conflict, and expiry also bounds
         # state growth when an attacker floods forged sender IPs.
         self.mapping_ttl_seconds = float(mapping_ttl_seconds)
         self._mappings: dict[str, _Mapping] = {}  # ip -> authoritative MAC

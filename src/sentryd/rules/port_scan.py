@@ -153,7 +153,7 @@ class PortScanRule(Rule):
     def _maybe_sweep(self, now: float) -> None:
         """Evict sources whose whole window has expired (event-time paced).
 
-        Without this, one dict entry per distinct source IP lives forever —
+        Without this, one dict entry per distinct source IP lives forever -
         unbounded growth under spoofed-source floods on a live capture.
         """
         if self._last_sweep is None:

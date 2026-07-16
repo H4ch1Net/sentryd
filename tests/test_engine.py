@@ -7,7 +7,7 @@ from sentryd.rules.base import Rule
 
 
 class AlwaysFireRule(Rule):
-    """Fires a fixed alert for every TCP event — exercises engine dedup."""
+    """Fires a fixed alert for every TCP event, exercises engine dedup."""
 
     rule_id = "always_fire"
 
@@ -69,7 +69,7 @@ def test_new_alert_after_cooldown_expires():
     engine = RuleEngine([AlwaysFireRule()], sinks=[sink], cooldown_seconds=60)
 
     engine.process(make_event(ts=100.0))
-    engine.process(make_event(ts=300.0))  # 200s later — past cooldown
+    engine.process(make_event(ts=300.0))  # 200s later, past cooldown
 
     assert len(sink.emitted) == 2
     assert all(a.count == 1 for a in sink.emitted)
@@ -98,7 +98,7 @@ class KeyedRule(Rule):
 
 def test_distinct_findings_same_src_dst_not_merged():
     # Regression: two different watched ports between the same pair of hosts
-    # must stay two alerts — only true repeats of the same finding merge.
+    # must stay two alerts, only true repeats of the same finding merge.
     sink = RecordingSink()
     engine = RuleEngine([KeyedRule()], sinks=[sink], cooldown_seconds=60)
 
@@ -132,7 +132,7 @@ def test_failing_rule_does_not_stop_the_run():
 
 
 def test_merge_keeps_rule_written_evidence():
-    # Dedup must never clobber the evidence the rule wrote at first firing —
+    # Dedup must never clobber the evidence the rule wrote at first firing -
     # that's the aggregate view an analyst verifies the finding with.
     sink = RecordingSink()
     engine = RuleEngine([AlwaysFireRule()], sinks=[sink], cooldown_seconds=60)

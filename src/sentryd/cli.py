@@ -66,7 +66,7 @@ def _triage_alerts(store: AlertStore, alerts: list[Alert]) -> None:
     provider = create_provider()
     if not provider.available:
         console.print(
-            "[dim]AI triage skipped — set OPENROUTER_API_KEY in .env to enable it. "
+            "[dim]AI triage skipped, set OPENROUTER_API_KEY in .env to enable it. "
             "All alerts are fully recorded without it.[/dim]"
         )
         return
@@ -76,7 +76,7 @@ def _triage_alerts(store: AlertStore, alerts: list[Alert]) -> None:
             console.print(f"[yellow]AI triage failed for alert #{alert.id} (see logs)[/yellow]")
             continue
         store.set_ai_summary(alert.id, result.summary)
-        console.print(Panel(result.summary, title=f"AI triage — alert #{alert.id} ({result.model})"))
+        console.print(Panel(result.summary, title=f"AI triage, alert #{alert.id} ({result.model})"))
 
 
 class CollectorSink:
@@ -733,7 +733,7 @@ def dash(
 
     Without --pcap it browses the alert store (and picks up new alerts as
     they land); with --pcap it replays the capture paced by packet
-    timestamps — ideal for a screen-recorded demo.
+    timestamps, ideal for a screen-recorded demo.
     """
     from sentryd.dashboard.app import DashboardApp
 

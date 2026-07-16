@@ -6,8 +6,8 @@ baseline. A bucket alerts when it exceeds ``spike_ratio`` x baseline AND an
 absolute byte floor (so a quiet host going from 2 to 11 packets never pages
 anyone).
 
-Buckets are evaluated when they complete — i.e. when a later event from the
-same host arrives — so the trailing partial bucket of a capture is never
+Buckets are evaluated when they complete, i.e. when a later event from the
+same host arrives, so the trailing partial bucket of a capture is never
 judged. All timing uses event timestamps: replaying a pcap gives the same
 answers as watching the wire.
 """
@@ -150,7 +150,7 @@ class TrafficSpikeRule(Rule):
                 )
             )
 
-        # Fold the completed bucket into the baseline (spikes included — the
+        # Fold the completed bucket into the baseline (spikes included, the
         # baseline adapts, and the engine's cooldown merges an ongoing flood).
         if window.ewma is None:
             window.ewma = float(completed_bytes)
