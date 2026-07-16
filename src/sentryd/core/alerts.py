@@ -43,10 +43,21 @@ class Alert:
     # for the same src/dst pair (e.g. suspicious_port sets the port here so
     # a Telnet hit and a Metasploit hit never merge into one alert).
     key: str = ""
+    # Investigation context, populated by rules where meaningful.
+    case_id: int | None = None  # which replay/capture run produced this
+    last_ts: float | None = None  # last occurrence (ts is first seen)
+    protocol: str | None = None
+    src_port: int | None = None
+    dst_port: int | None = None
+    reason: str = ""  # one line: why the rule fired, with the numbers
 
     @property
     def dedup_key(self) -> tuple[str, str | None, str | None, str]:
         return (self.rule_id, self.src, self.dst, self.key)
+
+    @property
+    def last_seen(self) -> float:
+        return self.last_ts if self.last_ts is not None else self.ts
 
     def evidence_json(self) -> str:
         return json.dumps(self.evidence, default=str, sort_keys=True)
@@ -55,12 +66,18 @@ class Alert:
         return {
             "id": self.id,
             "ts": self.ts,
+            "last_ts": self.last_seen,
+            "case_id": self.case_id,
             "rule_id": self.rule_id,
             "severity": self.severity.value,
             "confidence": self.confidence,
             "title": self.title,
             "src": self.src,
             "dst": self.dst,
+            "protocol": self.protocol,
+            "src_port": self.src_port,
+            "dst_port": self.dst_port,
+            "reason": self.reason,
             "evidence": self.evidence,
             "count": self.count,
             "status": self.status.value,

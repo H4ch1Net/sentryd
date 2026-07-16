@@ -132,6 +132,12 @@ class TrafficSpikeRule(Rule):
                     ts=bucket_end,
                     src=host,
                     dst=None,
+                    reason=(
+                        f"{completed_bytes:,} bytes in one {self.bucket_seconds:g}s "
+                        f"bucket is {observed_ratio:.1f}x this host's baseline of "
+                        f"{baseline:,.0f} bytes (threshold: {self.spike_ratio:g}x "
+                        f"and at least {self.min_bucket_bytes:,} bytes)"
+                    ),
                     evidence={
                         "bucket_bytes": completed_bytes,
                         "bucket_packets": completed_packets,

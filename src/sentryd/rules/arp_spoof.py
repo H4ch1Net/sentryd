@@ -92,6 +92,12 @@ class ArpSpoofRule(Rule):
             src=ip,
             dst=None,
             key=ip,
+            protocol="arp",
+            reason=(
+                f"{ip} was announced by {known.mac} since {known.first_seen:.0f} "
+                f"and is now claimed by {mac}; conflicting MACs for one IP is the "
+                f"ARP cache poisoning pattern"
+            ),
             evidence={
                 "ip": ip,
                 "previous_mac": known.mac,
@@ -133,6 +139,13 @@ class ArpSpoofRule(Rule):
                 src=event.src_ip,
                 dst=None,
                 key=f"gratuitous:{mac}",
+                protocol="arp",
+                reason=(
+                    f"{len(window)} gratuitous ARP announcements from {mac} in "
+                    f"{self.gratuitous_window_seconds:g}s (threshold "
+                    f"{self.gratuitous_threshold}); poisoning tools re-announce "
+                    f"aggressively to keep victim caches primed"
+                ),
                 evidence={
                     "mac": mac,
                     "announcements_in_window": len(window),

@@ -13,11 +13,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from sentryd import __version__
-from sentryd.config import load_config
 from sentryd.core.alerts import Alert, Severity
-from sentryd.core.engine import RuleEngine
+from sentryd.core.cases import CaseStatus
 from sentryd.render import SEVERITY_STYLE, fmt_ts_utc
-from sentryd.rules.base import build_rules
+from sentryd.runner import run_case
 from sentryd.sources.base import SourceError
 from sentryd.sources.live import LiveCaptureSource
 from sentryd.sources.logtail import LogTailSource
@@ -32,6 +31,8 @@ app = typer.Typer(
 )
 alerts_app = typer.Typer(help="Query stored alerts.", no_args_is_help=True)
 app.add_typer(alerts_app, name="alerts")
+cases_app = typer.Typer(help="Manage cases (one case per replay/capture run).", no_args_is_help=True)
+app.add_typer(cases_app, name="cases")
 
 console = Console()
 
@@ -55,15 +56,6 @@ class ConsoleSink:
 
     def update(self, alert: Alert) -> None:
         pass  # duplicate merges are reflected in storage, not re-printed
-
-
-def _build_engine(config_path: Path | None, store: AlertStore) -> RuleEngine:
-    config = load_config(config_path)
-    return RuleEngine(
-        rules=build_rules(config),
-        sinks=[store, ConsoleSink()],
-        cooldown_seconds=config.get("engine", {}).get("cooldown_seconds", 60),
-    )
 
 
 def _triage_alerts(store: AlertStore, alerts: list[Alert]) -> None:
@@ -97,37 +89,48 @@ class CollectorSink:
         pass
 
 
-def _run_detection(source, banner: str, db: Path, config: Optional[Path], triage: bool) -> None:
+def _run_detection(
+    source,
+    banner: str,
+    db: Path,
+    config: Optional[Path],
+    triage: bool,
+    *,
+    source_kind: str,
+    source_label: str,
+    case_name: Optional[str] = None,
+) -> None:
     """Shared pipeline runner for replay/sniff/tail.
 
-    Runs the engine over the source (Ctrl-C stops cleanly for endless
-    sources), prints the summary, and — only after detection has finished —
-    optionally sends the collected alerts for AI triage.
+    Each run becomes a case. Ctrl-C stops endless sources cleanly; AI triage
+    (when requested) runs only after detection has finished.
     """
-    store = AlertStore(db)
     collector = CollectorSink()
-    engine = _build_engine(config, store)
-    engine.sinks.append(collector)
-    console.print(f"[bold]sentryd[/bold] v{__version__} — {banner}")
-    console.print(f"rules: {', '.join(r.rule_id for r in engine.rules)}\n")
+    console.print(f"[bold]sentryd[/bold] v{__version__}, {banner}")
     try:
-        try:
-            stats = engine.run(source.events())
-        except KeyboardInterrupt:
-            engine.flush()
-            stats = engine.stats
-            console.print("\n[dim]stopped[/dim]")
-        if triage and collector.alerts:
-            console.print()
-            _triage_alerts(store, collector.alerts)
+        result = run_case(
+            db,
+            source,
+            source_kind=source_kind,
+            source_label=source_label,
+            name=case_name,
+            config_path=config,
+            extra_sinks=[ConsoleSink(), collector],
+        )
     except SourceError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=1)
-    finally:
-        store.close()
+    if result.interrupted:
+        console.print("\n[dim]stopped[/dim]")
 
+    if triage and collector.alerts:
+        console.print()
+        with AlertStore(db) as store:
+            _triage_alerts(store, collector.alerts)
+
+    stats = result.stats
     console.print(
-        f"\n[bold]done[/bold] — {stats.events_processed} events, "
+        f"\n[bold]done[/bold]: {stats.events_processed} events, "
         f"{stats.alerts_emitted} alerts "
         f"({stats.alerts_deduplicated} duplicates merged)"
     )
@@ -136,12 +139,19 @@ def _run_detection(source, banner: str, db: Path, config: Optional[Path], triage
         if n:
             style = SEVERITY_STYLE[sev]
             console.print(f"  [{style}]{sev.value}[/{style}]: {n}")
-    console.print(f"alerts stored in [cyan]{db}[/cyan] — inspect with `sentryd alerts list`")
+    console.print(
+        f"case [bold]#{result.case.id}[/bold] ({result.case.name}) stored in "
+        f"[cyan]{db}[/cyan]. Inspect with `sentryd cases show {result.case.id}` "
+        f"or `sentryd alerts list --case {result.case.id}`"
+    )
 
 
 TriageFlag = typer.Option(
     False, "--triage", help="Generate AI writeups for detected alerts afterwards."
 )
+
+
+CaseNameOption = typer.Option(None, "--case-name", help="Name for the created case.")
 
 
 @app.command()
@@ -150,9 +160,19 @@ def replay(
     db: Path = DbOption,
     config: Optional[Path] = ConfigOption,
     triage: bool = TriageFlag,
+    case_name: Optional[str] = CaseNameOption,
 ) -> None:
     """Replay a capture file through the detection engine (primary demo mode)."""
-    _run_detection(PcapFileSource(pcap), f"replaying [cyan]{pcap}[/cyan]", db, config, triage)
+    _run_detection(
+        PcapFileSource(pcap),
+        f"replaying [cyan]{pcap}[/cyan]",
+        db,
+        config,
+        triage,
+        source_kind="pcap",
+        source_label=str(pcap),
+        case_name=case_name,
+    )
 
 
 @app.command()
@@ -166,15 +186,25 @@ def sniff(
     db: Path = DbOption,
     config: Optional[Path] = ConfigOption,
     triage: bool = TriageFlag,
+    case_name: Optional[str] = CaseNameOption,
 ) -> None:
     """Live capture (requires root). Ctrl-C stops and prints the summary.
 
-    With --triage, AI writeups are generated after capture stops — triage
+    With --triage, AI writeups are generated after capture stops; triage
     never runs in the packet path.
     """
     source = LiveCaptureSource(interface=interface, bpf_filter=bpf)
     where = interface or "default interface"
-    _run_detection(source, f"sniffing [cyan]{where}[/cyan] (Ctrl-C to stop)", db, config, triage)
+    _run_detection(
+        source,
+        f"sniffing [cyan]{where}[/cyan] (Ctrl-C to stop)",
+        db,
+        config,
+        triage,
+        source_kind="live",
+        source_label=where,
+        case_name=case_name,
+    )
 
 
 @app.command()
@@ -191,6 +221,7 @@ def tail(
     db: Path = DbOption,
     config: Optional[Path] = ConfigOption,
     triage: bool = TriageFlag,
+    case_name: Optional[str] = CaseNameOption,
 ) -> None:
     """Stream a JSON-lines traffic log through the detection engine.
 
@@ -199,7 +230,16 @@ def tail(
     rules can see, the more they can do).
     """
     source = LogTailSource(logfile, follow=follow, from_start=from_start)
-    _run_detection(source, f"tailing [cyan]{logfile}[/cyan]", db, config, triage)
+    _run_detection(
+        source,
+        f"tailing [cyan]{logfile}[/cyan]",
+        db,
+        config,
+        triage,
+        source_kind="log",
+        source_label=str(logfile),
+        case_name=case_name,
+    )
 
 
 @alerts_app.command("list")
@@ -208,11 +248,12 @@ def alerts_list(
     severity: Optional[str] = typer.Option(None, help="Filter: low|medium|high|critical."),
     rule: Optional[str] = typer.Option(None, help="Filter by rule id."),
     status: Optional[str] = typer.Option(None, help="Filter: new|triaged|dismissed."),
+    case: Optional[int] = typer.Option(None, "--case", help="Only alerts from this case."),
     limit: int = typer.Option(50, help="Max rows."),
 ) -> None:
     """List stored alerts, newest first."""
     with AlertStore(db) as store:
-        rows = store.list(severity=severity, rule_id=rule, status=status, limit=limit)
+        rows = store.list(severity=severity, rule_id=rule, status=status, case_id=case, limit=limit)
 
     if not rows:
         console.print("no alerts found")
@@ -276,6 +317,167 @@ def alerts_show(
         console.print(Panel(alert.ai_summary, title="AI triage"))
     else:
         console.print("[dim]no AI triage yet — run `sentryd triage " f"{alert.id}`[/dim]")
+
+
+CASE_STATUS_STYLE = {
+    CaseStatus.RUNNING: "yellow",
+    CaseStatus.COMPLETE: "green",
+    CaseStatus.FAILED: "red",
+    CaseStatus.ARCHIVED: "dim",
+}
+
+
+@cases_app.command("list")
+def cases_list(
+    db: Path = DbOption,
+    all: bool = typer.Option(False, "--all", help="Include archived cases."),
+) -> None:
+    """List cases, newest first."""
+    with AlertStore(db) as store:
+        rows = store.list_cases(include_archived=all)
+    if not rows:
+        console.print("no cases yet. Create one with `sentryd replay <file.pcap>`")
+        return
+    table = Table(title=f"cases ({len(rows)})")
+    for col in ("id", "name", "source", "status", "events", "alerts", "created (UTC)", "AI report"):
+        table.add_column(col)
+    for c in rows:
+        style = CASE_STATUS_STYLE[c.status]
+        table.add_row(
+            str(c.id),
+            c.name,
+            f"{c.source_kind}:{c.source}",
+            f"[{style}]{c.status.value}[/{style}]",
+            str(c.events_processed),
+            str(c.alert_count),
+            c.created_at,
+            "yes" if c.ai_report else "-",
+        )
+    console.print(table)
+
+
+@cases_app.command("show")
+def cases_show(
+    case_id: int = typer.Argument(..., help="Case id (see `cases list`)."),
+    db: Path = DbOption,
+) -> None:
+    """Show one case: metadata, alert summary, notes, and AI report if any."""
+    with AlertStore(db) as store:
+        case = store.get_case(case_id)
+        if case is None:
+            console.print(f"[red]error:[/red] no case with id {case_id}")
+            raise typer.Exit(code=1)
+        alerts = store.list(case_id=case_id, limit=500)
+        stats = store.stats(case_id=case_id)
+
+    style = CASE_STATUS_STYLE[case.status]
+    span = (
+        f"{fmt_ts_utc(case.start_ts)} to {fmt_ts_utc(case.end_ts)} UTC"
+        if case.start_ts is not None and case.end_ts is not None
+        else "-"
+    )
+    body = (
+        f"[bold]{case.name}[/bold]  [{style}]{case.status.value}[/{style}]\n\n"
+        f"source:     {case.source_kind}:{case.source}\n"
+        f"created:    {case.created_at} UTC\n"
+        f"traffic:    {case.events_processed} events, span {span}\n"
+        f"alerts:     {case.alert_count}"
+        f" ({', '.join(f'{k}: {v}' for k, v in sorted(stats['by_severity'].items())) or 'none'})\n"
+    )
+    if case.pcap_sha256:
+        size = f"{case.pcap_size:,} bytes" if case.pcap_size is not None else "?"
+        body += f"pcap:       sha256 {case.pcap_sha256[:16]}..., {size}\n"
+    if case.error:
+        body += f"error:      [red]{case.error}[/red]\n"
+    if case.notes:
+        body += f"notes:      {case.notes}\n"
+    console.print(Panel(body.rstrip(), title=f"case #{case.id}"))
+
+    if alerts:
+        table = Table(title="alerts in this case")
+        for col in ("id", "first seen", "severity", "rule", "src", "dst", "count", "title"):
+            table.add_column(col)
+        for a in alerts[:30]:
+            sev_style = SEVERITY_STYLE[a.severity]
+            table.add_row(
+                str(a.id),
+                fmt_ts_utc(a.ts),
+                f"[{sev_style}]{a.severity.value}[/{sev_style}]",
+                a.rule_id,
+                a.src or "-",
+                a.dst or "-",
+                str(a.count),
+                a.title,
+            )
+        console.print(table)
+
+    if case.ai_report:
+        console.print(Panel(case.ai_report, title=f"AI review ({case.ai_report_at} UTC)"))
+    else:
+        console.print(f"[dim]no AI review yet. Run `sentryd triage --case {case.id}`[/dim]")
+
+
+@cases_app.command("archive")
+def cases_archive(
+    case_id: int = typer.Argument(..., help="Case id to archive."),
+    db: Path = DbOption,
+) -> None:
+    """Archive a case (hidden from default listings, data kept)."""
+    with AlertStore(db) as store:
+        if store.get_case(case_id) is None:
+            console.print(f"[red]error:[/red] no case with id {case_id}")
+            raise typer.Exit(code=1)
+        store.set_case_status(case_id, CaseStatus.ARCHIVED)
+    console.print(f"case #{case_id} archived")
+
+
+@cases_app.command("delete")
+def cases_delete(
+    case_id: int = typer.Argument(..., help="Case id to delete."),
+    db: Path = DbOption,
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete a case and every alert it produced."""
+    with AlertStore(db) as store:
+        case = store.get_case(case_id)
+        if case is None:
+            console.print(f"[red]error:[/red] no case with id {case_id}")
+            raise typer.Exit(code=1)
+        if not yes:
+            typer.confirm(
+                f"Delete case #{case_id} ({case.name}) and its {case.alert_count} alerts?",
+                abort=True,
+            )
+        n = store.delete_case(case_id)
+    console.print(f"deleted case #{case_id} and {n} alerts")
+
+
+@cases_app.command("clear")
+def cases_clear(
+    db: Path = DbOption,
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete ALL cases and alerts (fresh workspace)."""
+    if not yes:
+        typer.confirm("Delete every case and alert in this database?", abort=True)
+    with AlertStore(db) as store:
+        store.clear()
+    console.print("workspace cleared")
+
+
+@cases_app.command("notes")
+def cases_notes(
+    case_id: int = typer.Argument(..., help="Case id."),
+    text: str = typer.Argument(..., help="Notes to attach (replaces existing notes)."),
+    db: Path = DbOption,
+) -> None:
+    """Attach analyst notes to a case."""
+    with AlertStore(db) as store:
+        if store.get_case(case_id) is None:
+            console.print(f"[red]error:[/red] no case with id {case_id}")
+            raise typer.Exit(code=1)
+        store.set_case_notes(case_id, text)
+    console.print(f"notes saved on case #{case_id}")
 
 
 @app.command()

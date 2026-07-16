@@ -130,6 +130,12 @@ class PortScanRule(Rule):
                 ts=event.ts,
                 src=event.src_ip,
                 dst=victim,
+                protocol="tcp",
+                reason=(
+                    f"{distinct} distinct host/port targets probed with bare SYNs "
+                    f"within {span:g}s (threshold: {self.min_distinct_targets} "
+                    f"in {self.window_seconds:g}s)"
+                ),
                 evidence={
                     "scan_type": kind,
                     "distinct_targets": distinct,

@@ -70,6 +70,13 @@ class SuspiciousPortRule(Rule):
                 src=event.src_ip,
                 dst=event.dst_ip,
                 key=str(watch.port),
+                protocol=event.protocol,
+                src_port=event.src_port,
+                dst_port=watch.port,
+                reason=(
+                    f"connection attempt to port {watch.port}, watchlisted as "
+                    f"{watch.label}" + (f" ({watch.note})" if watch.note else "")
+                ),
                 evidence={
                     "port": watch.port,
                     "label": watch.label,

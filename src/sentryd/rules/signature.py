@@ -145,6 +145,13 @@ class SignatureRule(Rule):
                     src=event.src_ip,
                     dst=event.dst_ip,
                     key=sig.sig_id,
+                    protocol=event.protocol,
+                    src_port=event.src_port,
+                    dst_port=event.dst_port,
+                    reason=(
+                        f"packet matched custom signature {sig.sig_id}"
+                        + (f": {sig.note}" if sig.note else "")
+                    ),
                     evidence={
                         "signature_id": sig.sig_id,
                         "note": sig.note,

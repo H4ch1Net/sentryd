@@ -141,6 +141,7 @@ class RuleEngine:
             del self._open_alerts[alert.dedup_key]
             return False
         existing.count += 1
+        existing.last_ts = alert.ts
         # Keep the most severe/most confident view of the ongoing activity;
         # evidence stays as the rule wrote it at first firing (its aggregate
         # view when the threshold tripped), which dedup must not clobber.
