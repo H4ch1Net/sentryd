@@ -8,13 +8,14 @@ status polling is just a case read.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -60,13 +61,35 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).name) or "upload.pcap"
 
 
-def create_app(db_path: Path, uploads_dir: Path | None = None) -> FastAPI:
+def _allowed_pcap_root(uploads: Path) -> Path:
+    """Directory server-side replay paths must live under. Defaults to the
+    uploads dir; SENTRYD_PCAP_DIR widens it for advanced/local use."""
+    configured = os.environ.get("SENTRYD_PCAP_DIR", "").strip()
+    return Path(configured).resolve() if configured else uploads.resolve()
+
+
+def create_app(
+    db_path: Path, uploads_dir: Path | None = None, api_token: str | None = None
+) -> FastAPI:
     app = FastAPI(
         title="sentryd",
         version=__version__,
         description="Rule-based network anomaly detection with optional AI triage.",
     )
     uploads = uploads_dir or Path(db_path).parent / "uploads"
+    # Token gate is off unless a token is configured (keeps localhost simple).
+    token = api_token if api_token is not None else os.environ.get("SENTRYD_API_TOKEN", "").strip()
+
+    @app.middleware("http")
+    async def require_token(request: Request, call_next):
+        if token and request.url.path.startswith("/api/"):
+            header = request.headers.get("authorization", "")
+            if header != f"Bearer {token}":
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "missing or invalid API token"},
+                )
+        return await call_next(request)
 
     def with_store(fn):
         with AlertStore(db_path) as store:
@@ -261,7 +284,19 @@ def create_app(db_path: Path, uploads_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/replay", status_code=202)
     def replay(request: ReplayRequest) -> dict:
-        path = Path(request.path)
+        root = _allowed_pcap_root(uploads)
+        try:
+            path = Path(request.path).resolve()
+        except (OSError, RuntimeError):
+            raise HTTPException(status_code=400, detail="invalid path")
+        # Sandbox: server-side replay may only touch files under the allowed
+        # root, defeating path traversal (../../etc/...).
+        if not path.is_relative_to(root):
+            raise HTTPException(
+                status_code=403,
+                detail=f"path must be inside {root} "
+                f"(set SENTRYD_PCAP_DIR to allow another directory)",
+            )
         if not path.is_file():
             raise HTTPException(status_code=404, detail=f"no such file on server: {path}")
         return {"case": _start_background_replay(path, request.name)}

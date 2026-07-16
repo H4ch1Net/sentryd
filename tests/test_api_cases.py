@@ -63,7 +63,11 @@ def test_upload_rejects_wrong_type_and_empty(client):
     assert empty.status_code == 422
 
 
-def test_server_side_replay_path(client):
+def test_server_side_replay_path(client, monkeypatch):
+    # Allow replay from the fixtures dir for this test (default sandbox is the
+    # uploads dir; the dedicated sandbox tests live in test_security.py).
+    monkeypatch.setenv("SENTRYD_PCAP_DIR", str(FIXTURES))
+
     response = client.post(
         "/api/replay", json={"path": str(FIXTURES / "arpspoof.pcap"), "name": "arp run"}
     )
@@ -72,7 +76,7 @@ def test_server_side_replay_path(client):
     assert case["name"] == "arp run"
     assert wait_complete(client, case["id"])["alert_count"] == 1
 
-    missing = client.post("/api/replay", json={"path": "/nope/missing.pcap"})
+    missing = client.post("/api/replay", json={"path": str(FIXTURES / "missing.pcap")})
     assert missing.status_code == 404
 
 

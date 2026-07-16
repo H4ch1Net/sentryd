@@ -823,15 +823,31 @@ def dash(
 @app.command()
 def web(
     db: Path = DbOption,
-    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (localhost by default)."),
     port: int = typer.Option(8000, "--port", help="Listen port."),
 ) -> None:
-    """Serve the web UI: filterable alert table, detail view, stats."""
+    """Serve the web UI and REST API.
+
+    Binds to localhost by default. To expose it, set SENTRYD_API_TOKEN (API
+    calls then require an Authorization: Bearer header) and put it behind
+    TLS/a reverse proxy. SENTRYD_PCAP_DIR restricts server-side replay paths.
+    """
+    import os
+
     import uvicorn
 
     from sentryd.web.api import create_app
 
+    token_set = bool(os.environ.get("SENTRYD_API_TOKEN", "").strip())
+    is_local = host in ("127.0.0.1", "localhost", "::1")
+    if not is_local and not token_set:
+        console.print(
+            f"[yellow]warning:[/yellow] binding to [bold]{host}[/bold] exposes the API with "
+            "no token. Set SENTRYD_API_TOKEN and use TLS/a reverse proxy before exposing it."
+        )
     console.print(f"[bold]sentryd[/bold] web UI on [cyan]http://{host}:{port}[/cyan] (db: {db})")
+    if token_set:
+        console.print("[dim]API token required (SENTRYD_API_TOKEN is set)[/dim]")
     uvicorn.run(create_app(db), host=host, port=port, log_level="warning")
 
 
