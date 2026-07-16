@@ -184,12 +184,49 @@ def create_app(db_path: Path, uploads_dir: Path | None = None) -> FastAPI:
     @app.get("/api/rules")
     def rules() -> dict:
         config = load_config(None)
+        disabled = with_store(lambda s: s.disabled_rules())
         out = []
         for rule_id in sorted(RULE_REGISTRY):
             section = dict(config.get("rules", {}).get(rule_id) or {})
-            enabled = section.pop("enabled", True)
-            out.append({"rule_id": rule_id, "enabled": enabled, "config": section})
-        return {"rules": out, "signatures": config.get("signatures", [])}
+            config_enabled = section.pop("enabled", True)
+            out.append(
+                {
+                    "rule_id": rule_id,
+                    "config_enabled": config_enabled,
+                    "disabled": rule_id in disabled,
+                    "effective_enabled": config_enabled and rule_id not in disabled,
+                    "config": section,
+                }
+            )
+        return {
+            "rules": out,
+            "signatures": config.get("signatures", []),
+            "disabled": sorted(disabled),
+        }
+
+    @app.post("/api/rules/{rule_id}/toggle")
+    def toggle_rule(rule_id: str, disabled: bool = True) -> dict:
+        known = set(RULE_REGISTRY) | {"signature"}
+        if rule_id not in known:
+            raise HTTPException(status_code=404, detail=f"unknown rule {rule_id!r}")
+        current = with_store(lambda s: s.set_rule_disabled(rule_id, disabled))
+        return {"rule_id": rule_id, "disabled": rule_id in current}
+
+    @app.get("/api/status")
+    def status() -> dict:
+        provider = create_provider()
+
+        def fetch(store: AlertStore) -> dict:
+            return {
+                "version": __version__,
+                "ai": {"available": provider.available, "provider": provider.name},
+                "db_path": str(db_path),
+                "cases": len(store.list_cases()),
+                "alerts": store.stats()["total"],
+                "disabled_rules": sorted(store.disabled_rules()),
+            }
+
+        return with_store(fetch)
 
     # -- pcap intake -------------------------------------------------------------
 

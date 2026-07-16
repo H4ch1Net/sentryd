@@ -43,11 +43,15 @@ class Rule(ABC):
         """Inspect one event; return zero or more alerts."""
 
 
-def build_rules(config: dict) -> list[Rule]:
+def build_rules(config: dict, disabled: set[str] = frozenset()) -> list[Rule]:
     """Instantiate enabled rules from ``rules:`` plus the signature matcher.
 
     Custom signatures live under the top-level ``signatures:`` key; when any
     are configured, a SignatureRule is appended to evaluate them.
+
+    ``disabled`` is a runtime toggle set (from the settings store) applied on
+    top of the config's own per-rule ``enabled`` flag, so the web UI and CLI
+    can turn rules off without editing the config file.
     """
     from sentryd.rules.signature import SignatureRule
 
@@ -56,9 +60,9 @@ def build_rules(config: dict) -> list[Rule]:
         if rule_id not in RULE_REGISTRY:
             raise ValueError(f"unknown rule in config: {rule_id!r}")
         rule_cfg = dict(rule_cfg or {})
-        if not rule_cfg.pop("enabled", True):
+        if not rule_cfg.pop("enabled", True) or rule_id in disabled:
             continue
         rules.append(RULE_REGISTRY[rule_id].from_config(rule_cfg))
-    if config.get("signatures"):
+    if config.get("signatures") and "signature" not in disabled:
         rules.append(SignatureRule.from_config(config))
     return rules

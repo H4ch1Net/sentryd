@@ -108,7 +108,7 @@ def run_case(
             case = store.create_case(_build_case(source_kind, source_label, name))
 
         engine = RuleEngine(
-            rules=build_rules(config),
+            rules=build_rules(config, disabled=store.disabled_rules()),
             sinks=[CaseStoreSink(store, case.id), *extra_sinks],
             cooldown_seconds=config.get("engine", {}).get("cooldown_seconds", 60),
         )

@@ -389,34 +389,79 @@ def _rule_doc(rule_id: str) -> str:
     return (sys.modules[cls.__module__].__doc__ or "").strip()
 
 
+def _enabled_cell(config_enabled: bool, disabled: bool) -> str:
+    if disabled:
+        return "[red]off (toggled)[/red]"
+    if not config_enabled:
+        return "[red]off (config)[/red]"
+    return "[green]on[/green]"
+
+
 @rules_app.command("list")
-def rules_list(config: Optional[Path] = ConfigOption) -> None:
-    """List every rule with its enabled state and effective settings."""
+def rules_list(db: Path = DbOption, config: Optional[Path] = ConfigOption) -> None:
+    """List every rule with its effective enabled state and settings."""
     from sentryd.config import load_config
     from sentryd.rules.base import RULE_REGISTRY
 
     cfg = load_config(config)
+    with AlertStore(db) as store:
+        disabled = store.disabled_rules()
     table = Table(title="detection rules")
     for col in ("rule", "enabled", "settings", "summary"):
         table.add_column(col, overflow="fold")
     for rule_id in sorted(RULE_REGISTRY):
         section = dict(cfg.get("rules", {}).get(rule_id) or {})
-        enabled = section.pop("enabled", True)
+        config_enabled = section.pop("enabled", True)
         summary = _rule_doc(rule_id).splitlines()[0] if _rule_doc(rule_id) else ""
         table.add_row(
             rule_id,
-            "[green]yes[/green]" if enabled else "[red]no[/red]",
+            _enabled_cell(config_enabled, rule_id in disabled),
             ", ".join(f"{k}={v}" for k, v in section.items()) or "-",
             summary,
         )
     signatures = cfg.get("signatures", [])
     table.add_row(
         "signature",
-        "[green]yes[/green]" if signatures else "[dim]no signatures configured[/dim]",
+        _enabled_cell(bool(signatures), "signature" in disabled)
+        if signatures
+        else "[dim]no signatures configured[/dim]",
         f"{len(signatures)} signature(s)",
         "Config-driven stateless matcher (top-level signatures: key).",
     )
     console.print(table)
+
+
+@rules_app.command("disable")
+def rules_disable(
+    rule_id: str = typer.Argument(..., help="Rule id to turn off."),
+    db: Path = DbOption,
+) -> None:
+    """Turn a rule off for future runs (stored per workspace, no config edit)."""
+    _toggle_rule(rule_id, True, db)
+
+
+@rules_app.command("enable")
+def rules_enable(
+    rule_id: str = typer.Argument(..., help="Rule id to turn back on."),
+    db: Path = DbOption,
+) -> None:
+    """Re-enable a rule that was turned off."""
+    _toggle_rule(rule_id, False, db)
+
+
+def _toggle_rule(rule_id: str, disabled: bool, db: Path) -> None:
+    from sentryd.rules.base import RULE_REGISTRY
+
+    known = set(RULE_REGISTRY) | {"signature"}
+    if rule_id not in known:
+        console.print(
+            f"[red]error:[/red] unknown rule {rule_id!r} (known: {', '.join(sorted(known))})"
+        )
+        raise typer.Exit(code=1)
+    with AlertStore(db) as store:
+        store.set_rule_disabled(rule_id, disabled)
+    state = "disabled" if disabled else "enabled"
+    console.print(f"rule [bold]{rule_id}[/bold] {state} for future runs")
 
 
 @rules_app.command("explain")

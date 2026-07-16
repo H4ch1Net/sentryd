@@ -173,7 +173,7 @@ def test_rules_and_hosts_endpoints(client):
     rules = client.get("/api/rules").json()["rules"]
     ids = {r["rule_id"] for r in rules}
     assert {"port_scan", "suspicious_port", "traffic_spike", "arp_spoof"} <= ids
-    assert all("config" in r and "enabled" in r for r in rules)
+    assert all("config" in r and "effective_enabled" in r for r in rules)
 
     case = upload_fixture(client)
     wait_complete(client, case["id"])
