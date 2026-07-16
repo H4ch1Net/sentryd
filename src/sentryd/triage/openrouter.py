@@ -27,6 +27,7 @@ class OpenRouterTriage:
         client: httpx.Client | None = None,
     ) -> None:
         self.model = model
+        self._last_model: str | None = None
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "X-Title": "sentryd",
@@ -34,14 +35,21 @@ class OpenRouterTriage:
         self._client = client or httpx.Client(timeout=timeout)
 
     def triage(self, alert: Alert) -> TriageResult | None:
+        content = self.generate(build_messages(alert))
+        if content is None:
+            log.warning("AI triage failed for alert %s", alert.id)
+            return None
+        return TriageResult(summary=content, model=self._last_model or self.model)
+
+    def generate(self, messages: list[dict], max_tokens: int = 1200) -> str | None:
         try:
             response = self._client.post(
                 API_URL,
                 headers=self._headers,
                 json={
                     "model": self.model,
-                    "messages": build_messages(alert),
-                    "max_tokens": 500,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
                     "temperature": 0.2,
                 },
             )
@@ -50,8 +58,9 @@ class OpenRouterTriage:
             content = data["choices"][0]["message"]["content"].strip()
             if not content:
                 raise ValueError("empty completion")
-            return TriageResult(summary=content, model=data.get("model", self.model))
+            self._last_model = data.get("model", self.model)
+            return content
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-            # Triage is best-effort by contract: log and leave the alert bare.
-            log.warning("AI triage failed for alert %s: %s", alert.id, exc)
+            # Triage is best-effort by contract: log and return nothing.
+            log.warning("AI completion failed: %s", exc)
             return None

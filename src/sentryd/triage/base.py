@@ -34,6 +34,11 @@ class TriageProvider(Protocol):
         """Produce an analyst writeup for the alert, or None on any failure."""
         ...
 
+    def generate(self, messages: list[dict]) -> str | None:
+        """Run one chat completion; None on any failure. Used for case-level
+        reviews and any future prompt without changing the provider."""
+        ...
+
 
 class NullTriage:
     """The no-op provider used when AI triage is unavailable or disabled."""
@@ -42,6 +47,9 @@ class NullTriage:
     available = False
 
     def triage(self, alert: Alert) -> TriageResult | None:
+        return None
+
+    def generate(self, messages: list[dict]) -> str | None:
         return None
 
 

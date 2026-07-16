@@ -24,6 +24,7 @@ from sentryd.sources.logtail import LogTailSource
 from sentryd.sources.pcap import PcapFileSource
 from sentryd.storage.store import DEFAULT_DB_PATH, AlertStore
 from sentryd.triage.base import TriageProvider, create_provider
+from sentryd.triage.review import generate_case_review
 
 app = typer.Typer(
     name="sentryd",
@@ -553,41 +554,133 @@ def web(
     uvicorn.run(create_app(db), host=host, port=port, log_level="warning")
 
 
+NO_AI_MESSAGE = (
+    "[yellow]AI triage is not configured.[/yellow] Set OPENROUTER_API_KEY "
+    "in .env (see .env.example). Detection and evidence are complete without it."
+)
+
+
+def _triage_alert_by_id(store: AlertStore, alert_id: int, force: bool, as_json: bool) -> None:
+    alert = store.get(alert_id)
+    if alert is None:
+        console.print(f"[red]error:[/red] no alert with id {alert_id}")
+        raise typer.Exit(code=1)
+    if alert.ai_summary and not force:
+        if as_json:
+            print(json.dumps({"alert": alert.to_dict(), "cached": True}, default=str))
+        else:
+            console.print(Panel(alert.ai_summary, title=f"AI triage: alert #{alert.id} (cached)"))
+            console.print("[dim]use --force to regenerate[/dim]")
+        return
+
+    provider: TriageProvider = create_provider()
+    if not provider.available:
+        console.print(NO_AI_MESSAGE)
+        raise typer.Exit(code=2)
+    result = provider.triage(alert)
+    if result is None:
+        console.print("[red]error:[/red] triage request failed, alert left unannotated")
+        raise typer.Exit(code=1)
+    store.set_ai_summary(alert.id, result.summary)
+    if as_json:
+        print(json.dumps({"alert": store.get(alert.id).to_dict()}, default=str))
+    else:
+        console.print(Panel(result.summary, title=f"AI triage: alert #{alert.id} ({result.model})"))
+
+
+def _review_case(store: AlertStore, case, force: bool, as_json: bool) -> None:
+    if case is None:
+        console.print("[red]error:[/red] no such case (see `sentryd cases list`)")
+        raise typer.Exit(code=1)
+    provider = create_provider()
+    if not provider.available and not (case.ai_report and not force):
+        console.print(NO_AI_MESSAGE)
+        raise typer.Exit(code=2)
+    cached = bool(case.ai_report) and not force
+    report = generate_case_review(store, case, provider, force=force)
+    if report is None:
+        console.print("[red]error:[/red] review request failed, case left unannotated")
+        raise typer.Exit(code=1)
+    if as_json:
+        print(
+            json.dumps(
+                {"case": store.get_case(case.id).to_dict(), "cached": cached}, default=str
+            )
+        )
+    else:
+        suffix = " (cached)" if cached else ""
+        console.print(Panel(report, title=f"AI review: case #{case.id} {case.name}{suffix}"))
+        if cached:
+            console.print("[dim]use --force to regenerate[/dim]")
+
+
 @app.command()
 def triage(
-    alert_id: int = typer.Argument(..., help="Alert id to triage (see `alerts list`)."),
+    target: Optional[str] = typer.Argument(
+        None, help="Alert id for a single-alert writeup, or 'latest' for the newest case."
+    ),
+    case: Optional[int] = typer.Option(None, "--case", help="Overall AI review of this case."),
+    pcap: Optional[Path] = typer.Option(
+        None, "--pcap", help="Replay this capture into a new case, then review it."
+    ),
     db: Path = DbOption,
-    force: bool = typer.Option(False, "--force", help="Regenerate even if a writeup exists."),
+    config: Optional[Path] = ConfigOption,
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable JSON output."),
+    force: bool = typer.Option(False, "--force", help="Regenerate even if a report is cached."),
 ) -> None:
-    """Generate (or regenerate) the AI analyst writeup for a stored alert.
+    """AI triage: explain one alert, or review a whole case.
 
-    Detection never depends on this — it annotates an alert that already
-    exists. Requires OPENROUTER_API_KEY in the environment or .env.
+    Forms: `triage 12` (alert), `triage latest`, `triage --case 3`,
+    `triage --pcap capture.pcap`. Detection never depends on this; without
+    an API key everything else keeps working.
+
+    Only structured alert metadata is sent to the AI (a size-capped digest
+    for case reviews), never raw packet contents, and only when you run
+    this command.
     """
+    if sum(x is not None for x in (target, case, pcap)) != 1:
+        console.print(
+            "[red]error:[/red] pick exactly one of: an alert id, 'latest', --case, --pcap"
+        )
+        raise typer.Exit(code=1)
+
+    if pcap is not None:
+        result = _run_case_quiet(pcap, db, config)
+        with AlertStore(db) as store:
+            _review_case(store, store.get_case(result.case.id), force, as_json)
+        return
+
     with AlertStore(db) as store:
-        alert = store.get(alert_id)
-        if alert is None:
-            console.print(f"[red]error:[/red] no alert with id {alert_id}")
+        if case is not None:
+            _review_case(store, store.get_case(case), force, as_json)
+        elif target == "latest":
+            _review_case(store, store.latest_case(), force, as_json)
+        elif target is not None and target.lstrip("-").isdigit():
+            _triage_alert_by_id(store, int(target), force, as_json)
+        else:
+            console.print(f"[red]error:[/red] expected an alert id or 'latest', got {target!r}")
             raise typer.Exit(code=1)
-        if alert.ai_summary and not force:
-            console.print(Panel(alert.ai_summary, title=f"AI triage — alert #{alert.id} (cached)"))
-            console.print("[dim]use --force to regenerate[/dim]")
-            return
 
-        provider: TriageProvider = create_provider()
-        if not provider.available:
-            console.print(
-                "[yellow]AI triage is not configured.[/yellow] Set OPENROUTER_API_KEY "
-                "in .env (see .env.example). The alert itself is complete without it."
-            )
-            raise typer.Exit(code=2)
 
-        result = provider.triage(alert)
-        if result is None:
-            console.print("[red]error:[/red] triage request failed — alert left unannotated")
-            raise typer.Exit(code=1)
-        store.set_ai_summary(alert.id, result.summary)
-        console.print(Panel(result.summary, title=f"AI triage — alert #{alert.id} ({result.model})"))
+def _run_case_quiet(pcap: Path, db: Path, config: Optional[Path]):
+    """Replay for `triage --pcap`: terse output, then hand back the case."""
+    try:
+        result = run_case(
+            db,
+            PcapFileSource(pcap),
+            source_kind="pcap",
+            source_label=str(pcap),
+            config_path=config,
+        )
+    except SourceError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[dim]replayed {pcap} into case #{result.case.id}: "
+        f"{result.stats.events_processed} events, "
+        f"{result.stats.alerts_emitted} alerts[/dim]"
+    )
+    return result
 
 
 @app.callback()
