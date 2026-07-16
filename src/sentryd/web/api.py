@@ -49,6 +49,13 @@ class NotesRequest(BaseModel):
     notes: str
 
 
+class StatusRequest(BaseModel):
+    status: str
+
+
+_STATUS_PATTERN = "^(new|confirmed|false_positive|expected|ignored|dismissed|triaged)$"
+
+
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", Path(name).name) or "upload.pcap"
 
@@ -97,7 +104,7 @@ def create_app(db_path: Path, uploads_dir: Path | None = None) -> FastAPI:
     def list_alerts(
         severity: str | None = Query(None, pattern="^(low|medium|high|critical)$"),
         rule: str | None = None,
-        status: str | None = Query(None, pattern="^(new|triaged|dismissed)$"),
+        status: str | None = Query(None, pattern=_STATUS_PATTERN),
         case: int | None = None,
         host: str | None = None,
         limit: int = Query(100, ge=1, le=1000),
@@ -123,6 +130,23 @@ def create_app(db_path: Path, uploads_dir: Path | None = None) -> FastAPI:
             }
 
         return with_store(fetch)
+
+    @app.post("/api/alerts/{alert_id}/status")
+    def set_alert_status(alert_id: int, request: StatusRequest) -> dict:
+        import re
+
+        from sentryd.core.alerts import AlertStatus
+
+        if not re.match(_STATUS_PATTERN, request.status):
+            raise HTTPException(status_code=422, detail=f"invalid status {request.status!r}")
+
+        def apply(store: AlertStore) -> dict:
+            if store.get(alert_id) is None:
+                raise HTTPException(status_code=404, detail=f"no alert with id {alert_id}")
+            store.set_status(alert_id, AlertStatus(request.status))
+            return store.get(alert_id).to_dict()
+
+        return with_store(apply)
 
     @app.post("/api/alerts/{alert_id}/explain")
     def explain_alert(alert_id: int, force: bool = False) -> dict:

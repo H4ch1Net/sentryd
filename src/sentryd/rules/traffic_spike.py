@@ -132,6 +132,8 @@ class TrafficSpikeRule(Rule):
                     ts=bucket_end,
                     src=host,
                     dst=None,
+                    packet_count=completed_packets,
+                    byte_count=completed_bytes,
                     reason=(
                         f"{completed_bytes:,} bytes in one {self.bucket_seconds:g}s "
                         f"bucket is {observed_ratio:.1f}x this host's baseline of "

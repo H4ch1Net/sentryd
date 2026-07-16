@@ -131,6 +131,7 @@ class PortScanRule(Rule):
                 src=event.src_ip,
                 dst=victim,
                 protocol="tcp",
+                packet_count=len(window.attempts),
                 reason=(
                     f"{distinct} distinct host/port targets probed with bare SYNs "
                     f"within {span:g}s (threshold: {self.min_distinct_targets} "

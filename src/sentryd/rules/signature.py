@@ -148,6 +148,8 @@ class SignatureRule(Rule):
                     protocol=event.protocol,
                     src_port=event.src_port,
                     dst_port=event.dst_port,
+                    packet_count=1,
+                    byte_count=event.length or None,
                     reason=(
                         f"packet matched custom signature {sig.sig_id}"
                         + (f": {sig.note}" if sig.note else "")

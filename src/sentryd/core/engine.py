@@ -142,6 +142,11 @@ class RuleEngine:
             return False
         existing.count += 1
         existing.last_ts = alert.ts
+        # Accumulate packet/byte totals across merged occurrences.
+        if alert.packet_count is not None:
+            existing.packet_count = (existing.packet_count or 0) + alert.packet_count
+        if alert.byte_count is not None:
+            existing.byte_count = (existing.byte_count or 0) + alert.byte_count
         # Keep the most severe/most confident view of the ongoing activity;
         # evidence stays as the rule wrote it at first firing (its aggregate
         # view when the threshold tripped), which dedup must not clobber.

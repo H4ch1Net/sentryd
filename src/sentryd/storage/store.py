@@ -31,11 +31,18 @@ CREATE TABLE IF NOT EXISTS alerts (
     protocol    TEXT,
     src_port    INTEGER,
     dst_port    INTEGER,
-    reason      TEXT    NOT NULL DEFAULT ''
+    reason      TEXT    NOT NULL DEFAULT '',
+    packet_count INTEGER,
+    byte_count  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts (severity);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts (status);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS cases (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +72,8 @@ _ALERT_MIGRATIONS = {
     "src_port": "INTEGER",
     "dst_port": "INTEGER",
     "reason": "TEXT NOT NULL DEFAULT ''",
+    "packet_count": "INTEGER",
+    "byte_count": "INTEGER",
 }
 
 DEFAULT_DB_PATH = Path("sentryd.db")
@@ -105,13 +114,22 @@ class AlertStore:
         self.insert(alert)
 
     def update(self, alert: Alert) -> None:
-        # Dedup merges only ever bump count/severity/confidence/last_ts;
-        # evidence is rule-owned and immutable after emit.
+        # Dedup merges bump count/severity/confidence/last_ts and the running
+        # packet/byte totals; evidence is rule-owned and immutable after emit.
         if alert.id is None:
             return
         self._conn.execute(
-            "UPDATE alerts SET count = ?, severity = ?, confidence = ?, last_ts = ? WHERE id = ?",
-            (alert.count, alert.severity.value, alert.confidence, alert.last_ts, alert.id),
+            "UPDATE alerts SET count = ?, severity = ?, confidence = ?, last_ts = ?, "
+            "packet_count = ?, byte_count = ? WHERE id = ?",
+            (
+                alert.count,
+                alert.severity.value,
+                alert.confidence,
+                alert.last_ts,
+                alert.packet_count,
+                alert.byte_count,
+                alert.id,
+            ),
         )
         self._conn.commit()
 
@@ -122,8 +140,9 @@ class AlertStore:
             """
             INSERT INTO alerts (ts, rule_id, severity, confidence, title, src, dst,
                                 evidence, count, status, ai_summary, case_id, last_ts,
-                                protocol, src_port, dst_port, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                protocol, src_port, dst_port, reason,
+                                packet_count, byte_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert.ts,
@@ -143,6 +162,8 @@ class AlertStore:
                 alert.src_port,
                 alert.dst_port,
                 alert.reason,
+                alert.packet_count,
+                alert.byte_count,
             ),
         )
         self._conn.commit()
@@ -187,9 +208,10 @@ class AlertStore:
         return [self._row_to_alert(row) for row in rows]
 
     def set_ai_summary(self, alert_id: int, summary: str) -> None:
+        # Does not change the analyst verdict; AI presence is tracked by
+        # ai_summary itself, not by the status column.
         self._conn.execute(
-            "UPDATE alerts SET ai_summary = ?, status = ? WHERE id = ?",
-            (summary, AlertStatus.TRIAGED.value, alert_id),
+            "UPDATE alerts SET ai_summary = ? WHERE id = ?", (summary, alert_id)
         )
         self._conn.commit()
 
@@ -232,7 +254,68 @@ class AlertStore:
             "by_rule": by_rule,
             "sources": sources,
             "triaged": triaged,
+            "top_hosts": self._top_hosts(case_id),
+            "top_ports": self._top_ports(case_id),
         }
+
+    def _top_hosts(self, case_id: int | None, limit: int = 8) -> list[dict]:
+        """Hosts ranked by involvement: a source hit weighs more than a target
+        hit and scales with severity, matching the AI digest scoring."""
+        rank = {"low": 1, "medium": 2, "high": 3, "critical": 4, "triaged": 1}
+        scores: dict[str, dict] = {}
+        clause = "WHERE case_id = ?" if case_id is not None else ""
+        params = [case_id] if case_id is not None else []
+        for row in self._conn.execute(
+            f"SELECT src, dst, severity FROM alerts {clause}", params
+        ):
+            weight = rank.get(row["severity"], 1)
+            if row["src"]:
+                entry = scores.setdefault(row["src"], {"host": row["src"], "score": 0, "alerts": 0})
+                entry["score"] += 1 + weight
+                entry["alerts"] += 1
+            if row["dst"]:
+                entry = scores.setdefault(row["dst"], {"host": row["dst"], "score": 0, "alerts": 0})
+                entry["score"] += 1
+        ranked = sorted(scores.values(), key=lambda e: e["score"], reverse=True)
+        return ranked[:limit]
+
+    def _top_ports(self, case_id: int | None, limit: int = 8) -> list[dict]:
+        clause = "WHERE dst_port IS NOT NULL"
+        params: list = []
+        if case_id is not None:
+            clause += " AND case_id = ?"
+            params.append(case_id)
+        rows = self._conn.execute(
+            f"SELECT dst_port AS port, COUNT(*) AS alerts FROM alerts {clause} "
+            f"GROUP BY dst_port ORDER BY alerts DESC, dst_port LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        return [{"port": r["port"], "alerts": r["alerts"]} for r in rows]
+
+    # -- settings (key/value) ----------------------------------------------------
+
+    def get_setting(self, key: str, default=None):
+        row = self._conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return json.loads(row["value"]) if row else default
+
+    def set_setting(self, key: str, value) -> None:
+        self._conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, json.dumps(value)),
+        )
+        self._conn.commit()
+
+    def disabled_rules(self) -> set[str]:
+        return set(self.get_setting("disabled_rules", []))
+
+    def set_rule_disabled(self, rule_id: str, disabled: bool) -> set[str]:
+        current = self.disabled_rules()
+        current.add(rule_id) if disabled else current.discard(rule_id)
+        self.set_setting("disabled_rules", sorted(current))
+        return current
 
     def timeline(self, buckets: int = 30, case_id: int | None = None) -> dict:
         """Alert counts bucketed over the stored alerts' event-time span."""
@@ -410,6 +493,8 @@ class AlertStore:
             src_port=row["src_port"],
             dst_port=row["dst_port"],
             reason=row["reason"] or "",
+            packet_count=row["packet_count"],
+            byte_count=row["byte_count"],
         )
 
     def _row_to_case(self, row: sqlite3.Row) -> Case:

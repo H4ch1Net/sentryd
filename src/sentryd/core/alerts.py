@@ -20,9 +20,27 @@ class Severity(StrEnum):
 
 
 class AlertStatus(StrEnum):
+    """Analyst verdict on an alert. Independent of whether AI triage has run
+    (that is tracked by the presence of ai_summary)."""
+
     NEW = "new"
-    TRIAGED = "triaged"
+    CONFIRMED = "confirmed"  # real, actioned
+    FALSE_POSITIVE = "false_positive"
+    EXPECTED = "expected"  # known-benign for this environment
+    IGNORED = "ignored"
     DISMISSED = "dismissed"
+    TRIAGED = "triaged"  # legacy: pre-0.3 rows where AI triage set the status
+
+
+# Verdicts an analyst can assign (excludes the legacy TRIAGED value).
+VERDICTS = (
+    AlertStatus.NEW,
+    AlertStatus.CONFIRMED,
+    AlertStatus.FALSE_POSITIVE,
+    AlertStatus.EXPECTED,
+    AlertStatus.IGNORED,
+    AlertStatus.DISMISSED,
+)
 
 
 @dataclass
@@ -50,6 +68,8 @@ class Alert:
     src_port: int | None = None
     dst_port: int | None = None
     reason: str = ""  # one line: why the rule fired, with the numbers
+    packet_count: int | None = None  # packets attributed to this finding
+    byte_count: int | None = None  # bytes attributed, when the rule tracks it
 
     @property
     def dedup_key(self) -> tuple[str, str | None, str | None, str]:
@@ -78,6 +98,8 @@ class Alert:
             "src_port": self.src_port,
             "dst_port": self.dst_port,
             "reason": self.reason,
+            "packet_count": self.packet_count,
+            "byte_count": self.byte_count,
             "evidence": self.evidence,
             "count": self.count,
             "status": self.status.value,

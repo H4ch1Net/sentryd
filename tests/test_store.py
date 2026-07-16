@@ -65,19 +65,20 @@ def test_update_reflects_dedup_count(store):
     assert store.get(alert.id).confidence == 0.95
 
 
-def test_set_ai_summary_marks_triaged(store):
+def test_set_ai_summary_does_not_change_verdict(store):
+    # AI presence is tracked by ai_summary; it must not touch the verdict.
     alert = store.insert(sample_alert())
     store.set_ai_summary(alert.id, "Analyst writeup here.")
 
     fetched = store.get(alert.id)
     assert fetched.ai_summary == "Analyst writeup here."
-    assert fetched.status == AlertStatus.TRIAGED
+    assert fetched.status == AlertStatus.NEW
 
 
 def test_set_status(store):
     alert = store.insert(sample_alert())
-    store.set_status(alert.id, AlertStatus.DISMISSED)
-    assert store.get(alert.id).status == AlertStatus.DISMISSED
+    store.set_status(alert.id, AlertStatus.FALSE_POSITIVE)
+    assert store.get(alert.id).status == AlertStatus.FALSE_POSITIVE
 
 
 def test_stats(store):

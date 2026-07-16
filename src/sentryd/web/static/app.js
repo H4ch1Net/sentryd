@@ -655,6 +655,23 @@ async function openAlertDrawer(id) {
     : `<div class="ai-missing">No AI writeup yet.
        <button class="btn small" id="explain-alert">Explain with AI</button></div>`;
 
+  const volume = [];
+  if (a.packet_count != null) volume.push(`${a.packet_count} packets`);
+  if (a.byte_count != null) volume.push(`${a.byte_count.toLocaleString()} bytes`);
+
+  const VERDICT_BUTTONS = [
+    ["confirmed", "Confirm"],
+    ["false_positive", "False positive"],
+    ["expected", "Expected"],
+    ["ignored", "Ignore"],
+    ["new", "Reset"],
+  ];
+  const verdicts = VERDICT_BUTTONS.map(
+    ([value, label]) =>
+      `<button class="btn small verdict-btn ${a.status === value ? "primary" : "ghost"}"
+        data-verdict="${value}">${label}</button>`
+  ).join("");
+
   $("#drawer-body").innerHTML = `
     <dl class="meta-grid">
       <dt>First seen</dt><dd class="mono">${fmtTime(a.ts)} UTC</dd>
@@ -662,7 +679,11 @@ async function openAlertDrawer(id) {
       <dt>Flow</dt><dd class="mono">${flow}</dd>
       <dt>Confidence</dt><dd>${a.confidence.toFixed(2)}</dd>
       <dt>Occurrences</dt><dd>${a.count}</dd>
+      ${volume.length ? `<dt>Volume</dt><dd>${volume.join(", ")}</dd>` : ""}
+      <dt>Verdict</dt><dd><span class="status-chip">${esc(a.status)}</span></dd>
     </dl>
+    <h3>Verdict</h3>
+    <div class="verdict-row btn-row">${verdicts}</div>
     ${a.reason ? `<h3>Why this fired</h3><p class="reason">${esc(a.reason)}</p>` : ""}
     <h3>Evidence</h3>
     <pre class="mono">${esc(JSON.stringify(a.evidence, null, 2))}</pre>
@@ -671,6 +692,22 @@ async function openAlertDrawer(id) {
     <p class="hint">${esc(a.investigation_hint)}</p>
     <h3>AI triage</h3>
     ${ai}`;
+
+  for (const button of $("#drawer-body").querySelectorAll(".verdict-btn")) {
+    button.addEventListener("click", async () => {
+      try {
+        await send(`/api/alerts/${a.id}/status`, {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: button.dataset.verdict }),
+        });
+        toast(`Marked ${button.dataset.verdict.replace("_", " ")}`, "ok");
+        openAlertDrawer(a.id);
+        if (state.route === "dashboard") refreshAlerts().catch(() => {});
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  }
 
   for (const link of $("#drawer-body").querySelectorAll(".related-link")) {
     link.addEventListener("click", (ev) => {

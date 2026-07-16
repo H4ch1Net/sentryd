@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from sentryd import __version__
-from sentryd.core.alerts import Alert, Severity
+from sentryd.core.alerts import Alert, AlertStatus, Severity
 from sentryd.core.cases import CaseStatus
 from sentryd.core.correlate import correlate, investigation_hint, related_alerts
 from sentryd.export import alerts_to_csv, alerts_to_json, case_report_markdown, case_to_json
@@ -308,6 +308,14 @@ def alerts_show(
     ports = ""
     if alert.src_port or alert.dst_port:
         ports = f"ports:      {alert.src_port or '?'} -> {alert.dst_port or '?'}\n"
+    volume = ""
+    if alert.packet_count is not None or alert.byte_count is not None:
+        parts = []
+        if alert.packet_count is not None:
+            parts.append(f"{alert.packet_count} packets")
+        if alert.byte_count is not None:
+            parts.append(f"{alert.byte_count:,} bytes")
+        volume = f"volume:     {', '.join(parts)}\n"
     header = (
         f"[{style}]{alert.severity.value.upper()}[/{style}] {alert.title}\n\n"
         f"rule:       {alert.rule_id}\n"
@@ -318,9 +326,10 @@ def alerts_show(
         f"target:     {alert.dst or '-'}\n"
         f"protocol:   {alert.protocol or '-'}\n"
         f"{ports}"
+        f"{volume}"
         f"confidence: {alert.confidence:.2f}\n"
         f"count:      {alert.count}\n"
-        f"status:     {alert.status.value}"
+        f"verdict:    {alert.status.value}"
     )
     console.print(Panel(header, title=f"alert #{alert.id}"))
     if alert.reason:
@@ -337,6 +346,32 @@ def alerts_show(
         console.print(Panel(alert.ai_summary, title="AI triage"))
     else:
         console.print(f"[dim]no AI triage yet. Run `sentryd triage {alert.id}`[/dim]")
+
+
+@alerts_app.command("status")
+def alerts_status(
+    alert_id: int = typer.Argument(..., help="Alert id (see `alerts list`)."),
+    verdict: str = typer.Argument(
+        ..., help="new | confirmed | false_positive | expected | ignored | dismissed"
+    ),
+    db: Path = DbOption,
+) -> None:
+    """Set the analyst verdict on an alert (triage state)."""
+    from sentryd.core.alerts import VERDICTS
+
+    valid = {v.value for v in VERDICTS}
+    if verdict not in valid:
+        console.print(
+            f"[red]error:[/red] invalid verdict {verdict!r} (choose one of: "
+            f"{', '.join(sorted(valid))})"
+        )
+        raise typer.Exit(code=1)
+    with AlertStore(db) as store:
+        if store.get(alert_id) is None:
+            console.print(f"[red]error:[/red] no alert with id {alert_id}")
+            raise typer.Exit(code=1)
+        store.set_status(alert_id, AlertStatus(verdict))
+    console.print(f"alert #{alert_id} marked [bold]{verdict}[/bold]")
 
 
 export_app = typer.Typer(help="Export alerts and case reports.", no_args_is_help=True)

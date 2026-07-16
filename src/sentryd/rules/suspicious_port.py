@@ -73,6 +73,8 @@ class SuspiciousPortRule(Rule):
                 protocol=event.protocol,
                 src_port=event.src_port,
                 dst_port=watch.port,
+                packet_count=1,
+                byte_count=event.length or None,
                 reason=(
                     f"connection attempt to port {watch.port}, watchlisted as "
                     f"{watch.label}" + (f" ({watch.note})" if watch.note else "")
