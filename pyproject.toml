@@ -1,6 +1,6 @@
 [project]
 name = "sentryd"
-version = "0.1.0"
+version = "0.3.0"
 description = "Network anomaly detection with deterministic rules and optional AI-powered alert triage"
 readme = "README.md"
 requires-python = ">=3.11"

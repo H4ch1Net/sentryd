@@ -8,6 +8,8 @@ explainable, testable rule logic that runs entirely offline. The AI layer
 annotates alerts after they exist, it never influences whether something is
 detected, and the whole tool works with no API key configured.
 
+![sentryd dashboard](docs/img/dashboard.png)
+
 ```
  input sources                 core                       consumers
 ┌─────────────────┐   ┌─────────────────────┐   ┌─────────────────────────┐
@@ -43,7 +45,19 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or plain pip).
 git clone https://github.com/H4ch1Net/sentryd && cd sentryd
 uv sync
 uv run pytest        # fully offline
+make demo            # replay the bundled capture into a case
+make web             # console on http://127.0.0.1:8000
 ```
+
+### Run with Docker
+
+```bash
+docker compose up --build     # console on http://localhost:8000
+```
+
+Data (the SQLite db and uploaded pcaps) persists in a named volume. To enable
+AI triage, copy `.env.example` to `.env` and set `OPENROUTER_API_KEY`. To
+require an API token when exposing the port, set `SENTRYD_API_TOKEN`.
 
 ## Cases: one run, one workspace
 
@@ -163,9 +177,42 @@ plus the REST API. It has three views:
 - **Case detail**: summary and metadata, editable notes, correlated activity
   with attack-chain labels, per-case timeline and alerts, export buttons, and
   an **Overall AI Review** button that renders the sectioned report.
+- **Settings**: instance status, per-rule on/off toggles, and the theme
+  switch.
 
-Alert and host detail open in a slide-over drawer. The UI is light/dark
-themed and degrades to clear messages when AI is not configured.
+Alert and host detail open in a slide-over drawer with the verdict controls.
+The UI is light/dark themed and degrades to clear messages when AI is not
+configured.
+
+![case detail](docs/img/case-detail.png)
+
+![alert drawer](docs/img/alert-drawer.png)
+
+## Interpreting alerts
+
+Each alert answers three questions before you touch the AI layer:
+
+- **What fired and why.** The rule id and a plain-language reason with the
+  actual numbers (for example, "15 distinct host/port targets probed with bare
+  SYNs within 1.68s"). Severity is the rule's assessment of impact; confidence
+  is how strongly the evidence matched (it rises the further past threshold the
+  activity is).
+- **The evidence.** Concrete fields an analyst can verify independently: ports
+  probed, both MACs in an ARP conflict, byte/packet counts, sampled flows. No
+  AI is needed to confirm the finding.
+- **What to do next.** A suggested investigation command (sentryd filters or a
+  `tshark` display filter) and the related alerts on the same hosts.
+
+Work a case by assigning a **verdict** to each alert (confirmed, false
+positive, expected, ignored, dismissed) from the drawer or
+`sentryd alerts status <id> <verdict>`. Verdicts are independent of AI triage,
+so marking something a false positive never depends on a provider being
+configured.
+
+**A typical workflow:** upload a capture on the Cases page, wait for the
+replay to finish, open the case, read the correlated activity to see the
+attack chain, run the Overall AI Review for a narrative, mark the benign hits
+as false positives, and export the case report (`.md`) or alerts (`.csv`).
 
 ## HTTP API
 
@@ -180,14 +227,22 @@ Interactive OpenAPI docs are served at `/docs`. Core endpoints:
 | POST | `/api/cases/{id}/archive` | archive a case |
 | DELETE | `/api/cases/{id}` | delete a case and its alerts |
 | GET | `/api/alerts` / `/api/alerts/{id}` | list (filters: severity/rule/status/case/host) / detail with related + hint |
+| POST | `/api/alerts/{id}/status` | set the analyst verdict |
 | POST | `/api/alerts/{id}/explain` | AI writeup for one alert |
 | POST | `/api/cases/{id}/triage` | overall AI review of a case |
 | GET | `/api/cases/{id}/report?format=md\|json` | case report download |
 | GET | `/api/export/alerts?format=json\|csv` | alert export download |
-| GET | `/api/rules` / `/api/hosts/{ip}` | effective rule config / host summary |
+| GET | `/api/rules` / `POST /api/rules/{id}/toggle` | effective rule config / enable-disable |
+| GET | `/api/hosts/{ip}` / `/api/status` | host summary / instance status |
 
 AI endpoints return `503` with a clear message when no provider is
 configured; detection and export endpoints never need one.
+
+**Hardening.** The API binds to `127.0.0.1` by default. Set
+`SENTRYD_API_TOKEN` to require an `Authorization: Bearer <token>` header on
+`/api/*`, and `SENTRYD_PCAP_DIR` to allow server-side replay from a directory
+other than the uploads sandbox. Put TLS or a reverse proxy in front before
+exposing it.
 
 ## Terminal and web parity
 
@@ -199,16 +254,19 @@ Both interfaces expose the same core capabilities over one engine and store:
 | list and filter alerts | `alerts list` | Dashboard table |
 | alert detail (evidence, why, next step) | `alerts show` | alert drawer |
 | cases: list / show / archive / delete / notes / clear | `cases ...` | Cases + case detail |
+| set alert verdict | `alerts status <id> <verdict>` | drawer verdict buttons |
 | per-alert AI explanation | `triage <id>` | Explain button |
 | overall AI review | `triage latest\|--case\|--pcap` | Overall AI Review button |
 | host summary | (in `alerts show` related) | host drawer |
 | exports (json/csv/md) | `export ...` | case page download buttons |
-| rules: list / explain / lint / test | `rules ...` | `GET /api/rules` (read-only) |
+| rules: list / explain / lint / test | `rules ...` | Settings (list) / `GET /api/rules` |
+| enable / disable rules | `rules enable/disable` | Settings toggles |
 | live monitor | `dash` (Textual) | dashboard auto-refresh |
 
 The Textual `dash` is the live-monitor view and is CLI-only by nature; rule
-editing stays in `config/signatures.yaml` (with `rules lint`) rather than a
-UI form to keep configuration reviewable in version control.
+`explain`/`lint`/`test` stay in the CLI (config authoring), while enabling and
+disabling rules works in both. Rule thresholds live in
+`config/signatures.yaml` to keep configuration reviewable in version control.
 
 ## Configuration
 
