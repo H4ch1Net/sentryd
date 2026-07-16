@@ -56,6 +56,29 @@ def pcap_metadata(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), path.stat().st_size
 
 
+def _build_case(source_kind: str, source_label: str, name: str | None) -> Case:
+    case = Case(
+        id=None,
+        name=name or Path(source_label).name or source_label,
+        source_kind=source_kind,
+        source=str(source_label),
+    )
+    if source_kind == "pcap":
+        path = Path(source_label)
+        if path.is_file():
+            case.pcap_sha256, case.pcap_size = pcap_metadata(path)
+    return case
+
+
+def create_pending_case(
+    db: Path, *, source_kind: str, source_label: str, name: str | None = None
+) -> Case:
+    """Create a case row (status running) ahead of a background run, so the
+    caller can hand its id to the client before processing starts."""
+    with AlertStore(db) as store:
+        return store.create_case(_build_case(source_kind, source_label, name))
+
+
 def run_case(
     db: Path,
     source,
@@ -65,26 +88,24 @@ def run_case(
     name: str | None = None,
     config_path: Path | None = None,
     extra_sinks: Iterable[AlertSink] = (),
+    case_id: int | None = None,
 ) -> CaseRunResult:
-    """Run a PacketSource through the engine inside a fresh case.
+    """Run a PacketSource through the engine inside a case.
 
-    Raises SourceError (after marking the case failed) for user-facing
-    source problems; KeyboardInterrupt finalizes the case as complete with
-    whatever was processed and is reported via CaseRunResult.interrupted.
+    A fresh case is created unless case_id names one prepared earlier via
+    create_pending_case. Raises SourceError (after marking the case failed)
+    for user-facing source problems; KeyboardInterrupt finalizes the case as
+    complete with whatever was processed and is reported via
+    CaseRunResult.interrupted.
     """
     config = load_config(config_path)
     with AlertStore(db) as store:
-        case = Case(
-            id=None,
-            name=name or Path(source_label).name or source_label,
-            source_kind=source_kind,
-            source=str(source_label),
-        )
-        if source_kind == "pcap":
-            path = Path(source_label)
-            if path.is_file():
-                case.pcap_sha256, case.pcap_size = pcap_metadata(path)
-        store.create_case(case)
+        if case_id is not None:
+            case = store.get_case(case_id)
+            if case is None:
+                raise ValueError(f"no case with id {case_id}")
+        else:
+            case = store.create_case(_build_case(source_kind, source_label, name))
 
         engine = RuleEngine(
             rules=build_rules(config),

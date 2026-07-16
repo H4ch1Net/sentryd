@@ -16,6 +16,7 @@ from sentryd import __version__
 from sentryd.core.alerts import Alert, Severity
 from sentryd.core.cases import CaseStatus
 from sentryd.core.correlate import correlate, investigation_hint, related_alerts
+from sentryd.export import alerts_to_csv, alerts_to_json, case_report_markdown, case_to_json
 from sentryd.render import SEVERITY_STYLE, fmt_ts_utc
 from sentryd.runner import run_case
 from sentryd.sources.base import SourceError
@@ -336,6 +337,70 @@ def alerts_show(
         console.print(Panel(alert.ai_summary, title="AI triage"))
     else:
         console.print(f"[dim]no AI triage yet. Run `sentryd triage {alert.id}`[/dim]")
+
+
+export_app = typer.Typer(help="Export alerts and case reports.", no_args_is_help=True)
+app.add_typer(export_app, name="export")
+
+
+def _write_export(content: str, output: Optional[Path], what: str) -> None:
+    if output is None:
+        print(content)
+    else:
+        output.write_text(content)
+        console.print(f"{what} written to [cyan]{output}[/cyan]")
+
+
+@export_app.command("alerts")
+def export_alerts(
+    db: Path = DbOption,
+    format: str = typer.Option("json", "--format", help="json or csv."),
+    case: Optional[int] = typer.Option(None, "--case", help="Only alerts from this case."),
+    severity: Optional[str] = typer.Option(None, help="Filter: low|medium|high|critical."),
+    rule: Optional[str] = typer.Option(None, help="Filter by rule id."),
+    limit: int = typer.Option(1000, help="Max alerts."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write to file."),
+) -> None:
+    """Export alerts as JSON or CSV (stdout by default)."""
+    if format not in ("json", "csv"):
+        console.print(f"[red]error:[/red] unsupported format {format!r} (json, csv)")
+        raise typer.Exit(code=1)
+    with AlertStore(db) as store:
+        alerts = store.list(
+            severity=severity, rule_id=rule, case_id=case, limit=limit
+        )
+    content = alerts_to_json(alerts) if format == "json" else alerts_to_csv(alerts)
+    _write_export(content, output, f"{len(alerts)} alerts ({format})")
+
+
+@export_app.command("case")
+def export_case(
+    case_id: int = typer.Argument(..., help="Case id to export."),
+    db: Path = DbOption,
+    format: str = typer.Option("md", "--format", help="md (analyst report) or json (bundle)."),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Write to file."),
+) -> None:
+    """Export one case as a markdown report or a JSON bundle.
+
+    The markdown report is complete without AI; a stored AI review is
+    appended as its own labeled section.
+    """
+    if format not in ("md", "json"):
+        console.print(f"[red]error:[/red] unsupported format {format!r} (md, json)")
+        raise typer.Exit(code=1)
+    with AlertStore(db) as store:
+        case = store.get_case(case_id)
+        if case is None:
+            console.print(f"[red]error:[/red] no case with id {case_id}")
+            raise typer.Exit(code=1)
+        alerts = store.list(case_id=case_id, limit=1000)
+    clusters = correlate(alerts)
+    content = (
+        case_report_markdown(case, alerts, clusters)
+        if format == "md"
+        else case_to_json(case, alerts, clusters)
+    )
+    _write_export(content, output, f"case #{case_id} report ({format})")
 
 
 CASE_STATUS_STYLE = {

@@ -17,3 +17,6 @@ sentryd.db
 
 # Secrets
 .env
+
+# PCAP uploads via the web UI
+uploads/
