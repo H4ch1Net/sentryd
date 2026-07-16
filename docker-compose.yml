@@ -1,0 +1,25 @@
+# Run the sentryd console with one command:
+#
+#   docker compose up --build      # then open http://localhost:8000
+#
+# Data (SQLite db + uploaded pcaps) persists in the sentryd-data volume.
+# Copy .env.example to .env to enable AI triage or require an API token.
+
+services:
+  sentryd:
+    build: .
+    image: sentryd
+    ports:
+      - "8000:8000"
+    volumes:
+      - sentryd-data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SENTRYD_DB: /data/sentryd.db
+      SENTRYD_PCAP_DIR: /data/uploads
+    restart: unless-stopped
+
+volumes:
+  sentryd-data:

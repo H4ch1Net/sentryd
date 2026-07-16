@@ -39,7 +39,12 @@ app.add_typer(cases_app, name="cases")
 
 console = Console()
 
-DbOption = typer.Option(DEFAULT_DB_PATH, "--db", help="SQLite database path.")
+DbOption = typer.Option(
+    DEFAULT_DB_PATH,
+    "--db",
+    envvar="SENTRYD_DB",
+    help="SQLite database path (or set SENTRYD_DB).",
+)
 ConfigOption = typer.Option(
     None, "--config", help="Config file (defaults to ./config/signatures.yaml if present)."
 )
