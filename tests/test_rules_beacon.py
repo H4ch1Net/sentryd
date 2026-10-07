@@ -39,7 +39,8 @@ def test_regular_tcp_beacon_fires_once():
     assert alert.rule_id == "beacon"
     assert alert.severity == Severity.MEDIUM
     assert (alert.src, alert.dst, alert.dst_port) == ("10.0.0.5", "198.51.100.7", 8443)
-    assert alert.ts == 1000.0 + 5 * 60.0  # fires on the 6th contact
+    assert alert.ts == 1000.0  # first seen: the contact that started the rhythm
+    assert alert.last_ts == 1000.0 + 5 * 60.0  # confirmed on the 6th contact
     assert alert.evidence["contacts"] == 6
     assert alert.evidence["mean_interval_seconds"] == 60.0
     assert alert.evidence["jitter_cv"] == 0.0

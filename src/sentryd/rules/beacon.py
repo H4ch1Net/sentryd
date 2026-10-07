@@ -43,7 +43,6 @@ class _Flow:
     last_ts: float = 0.0  # last packet of any kind in this flow
     last_src_port: int | None = None
     fired: bool = False
-    first_contact: float | None = None
 
 
 @register
@@ -107,8 +106,6 @@ class BeaconRule(Rule):
                 flow.contacts.clear()  # too long a silence to be one rhythm
                 flow.fired = False
 
-        if not flow.contacts:
-            flow.first_contact = event.ts
         flow.contacts.append(event.ts)
         flow.last_ts = event.ts
         flow.last_src_port = event.src_port
@@ -144,14 +141,16 @@ class BeaconRule(Rule):
                 f"Beaconing: {event.src_ip} contacts {service} every "
                 f"~{mean:.0f}s ({contacts} contacts, {jitter:.1%} jitter)"
             ),
-            ts=event.ts,
+            # The finding spans the judged rhythm: first seen at its oldest
+            # contact, last seen at the one that confirmed it.
+            ts=flow.contacts[0],
+            last_ts=event.ts,
             src=event.src_ip,
             dst=event.dst_ip,
             key=f"{event.protocol}/{event.dst_port}",
             protocol=event.protocol,
             src_port=event.src_port,
             dst_port=event.dst_port,
-            packet_count=contacts,
             reason=(
                 f"{contacts} contacts to {service} at a mean interval of {mean:.1f}s "
                 f"with {jitter:.1%} variation (coefficient of variation; threshold "
@@ -163,7 +162,7 @@ class BeaconRule(Rule):
                 "stdev_seconds": round(pstdev(intervals), 3),
                 "jitter_cv": round(jitter, 4),
                 "recent_intervals": [round(i, 2) for i in intervals[-10:]],
-                "first_contact": flow.first_contact,
+                "first_contact": flow.contacts[0],
                 "protocol": event.protocol,
                 "dst_port": event.dst_port,
                 "max_jitter": self.max_jitter,
