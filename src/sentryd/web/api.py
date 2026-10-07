@@ -171,12 +171,14 @@ def create_app(
         status: str | None = Query(None, pattern=_STATUS_PATTERN),
         case: int | None = None,
         host: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
         limit: int = Query(100, ge=1, le=1000),
     ) -> dict:
         alerts = with_store(
             lambda s: s.list(
                 severity=severity, rule_id=rule, status=status,
-                case_id=case, host=host, limit=limit,
+                case_id=case, host=host, limit=limit, since=since, until=until,
             )
         )
         return {"alerts": [a.to_dict() for a in alerts]}
@@ -490,10 +492,16 @@ def create_app(
         case: int | None = None,
         severity: str | None = Query(None, pattern="^(low|medium|high|critical)$"),
         rule: str | None = None,
+        status: str | None = Query(None, pattern=_STATUS_PATTERN),
+        since: float | None = None,
+        until: float | None = None,
         limit: int = Query(1000, ge=1, le=10000),
     ):
         alerts = with_store(
-            lambda s: s.list(severity=severity, rule_id=rule, case_id=case, limit=limit)
+            lambda s: s.list(
+                severity=severity, rule_id=rule, status=status, case_id=case,
+                limit=limit, since=since, until=until,
+            )
         )
         if format == "csv":
             return PlainTextResponse(

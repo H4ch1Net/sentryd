@@ -191,3 +191,16 @@ def test_case_detail_reports_risk_and_phases(tmp_path):
     assert [p["phase"] for p in cluster["phases"]] == ["reconnaissance", "command-and-control"]
     assert detail["risk"]["source"] == "10.0.0.66"
     assert detail["risk"]["score"] == cluster["risk"]["score"] == 60 + 7 + 10
+
+
+def test_alerts_filter_by_event_time_window(client):
+    def titles(query):
+        return [a["title"] for a in client.get(f"/api/alerts?{query}").json()["alerts"]]
+
+    assert titles("since=1500") == ["telnet B"]
+    assert titles("until=1500") == ["scan A"]
+    assert titles("since=1000&until=2000") == ["telnet B", "scan A"]  # inclusive bounds
+    assert titles("since=2000.5") == []
+
+    csv_out = client.get("/api/export/alerts?format=csv&until=1500&status=new").text
+    assert "scan A" in csv_out and "telnet B" not in csv_out

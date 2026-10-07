@@ -243,7 +243,11 @@ class AlertStore:
         case_id: int | None = None,
         host: str | None = None,
         limit: int = 50,
+        since: float | None = None,
+        until: float | None = None,
     ) -> list[Alert]:
+        """Newest first. ``since``/``until`` bound the first-seen event time
+        (inclusive), e.g. to one bucket of the activity timeline."""
         query = "SELECT * FROM alerts"
         clauses, params = [], []
         if severity:
@@ -261,6 +265,12 @@ class AlertStore:
         if host:
             clauses.append("(src = ? OR dst = ?)")
             params.extend([host, host])
+        if since is not None:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("ts <= ?")
+            params.append(until)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY ts DESC, id DESC LIMIT ?"
