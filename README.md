@@ -8,7 +8,7 @@ explainable, testable rule logic that runs entirely offline. The AI layer
 annotates alerts after they exist, it never influences whether something is
 detected, and the whole tool works with no API key configured.
 
-![sentryd dashboard](docs/img/dashboard.png)
+![sentryd overview](docs/img/dashboard.png)
 
 ```
  input sources                 core                       consumers
@@ -26,11 +26,18 @@ detected, and the whole tool works with no API key configured.
 
 | rule | what it catches | technique |
 |---|---|---|
-| `port_scan` | vertical scans, horizontal sweeps | sliding window of SYN-only attempts; distinct (host, port) targets per source |
+| `port_scan` | SYN/connect scans, stealth FIN and XMAS scans, horizontal sweeps | sliding window of probe segments (no ACK); distinct (host, port) targets per source; technique named in the alert |
+| `beacon` | command-and-control check-ins | per-flow contact rhythm: coefficient of variation of the intervals, burst and SYN-retransmit folding, streaming and infrastructure ports excluded |
 | `traffic_spike` | floods, exfil bursts | per-host EWMA baseline per time bucket; ratio threshold + absolute floor |
 | `arp_spoof` | ARP cache poisoning / MITM | IP→MAC conflict tracking over ARP announcements; gratuitous-ARP flood detection |
 | `suspicious_port` | known-bad ports (4444, 31337, telnet, …) | config-driven watchlist with per-port severity and analyst notes |
 | `signature` | anything stateless you can describe | YAML signatures: protocol, CIDRs, port ranges, TCP flags |
+
+Stealth probes are counted only when their flags are explicit (FIN, or
+FIN+PSH+URG): a flagless NULL probe is indistinguishable from a log record
+that simply omits `tcp_flags`, so it is not guessed at. The beacon rule
+fires once per established rhythm and re-arms only after the pattern clearly
+breaks, so a beacon hovering at the jitter threshold cannot flap.
 
 Every alert carries a rule id, severity, confidence, and concrete evidence
 (the ports probed, both MACs, the byte counts), enough for an analyst to
@@ -166,27 +173,56 @@ the exact code that runs on live traffic.
 
 ## Web UI
 
-`sentryd web` serves a single-page console (plain HTML/CSS/JS, no build step)
-plus the REST API. It has three views:
+`sentryd web` serves a single-page console (plain HTML/CSS and ES modules,
+no build step) plus the REST API.
 
-- **Dashboard**: KPI tiles, an alert-activity timeline, per-rule breakdown,
-  and a filterable alert table, scoped to all cases or one.
-- **Cases**: drag-and-drop PCAP upload (or a server-side path for advanced
-  users) that creates a case and replays it in the background with live
-  progress, plus the case list.
-- **Case detail**: summary and metadata, editable notes, correlated activity
-  with attack-chain labels, per-case timeline and alerts, export buttons, and
-  an **Overall AI Review** button that renders the sectioned report.
-- **Settings**: instance status, per-rule on/off toggles, and the theme
-  switch.
+- **Overview**: KPI tiles with sparklines and review progress, an activity
+  chart (click a bar to filter the table to that window, shift-click to
+  extend), clickable rule/host/port breakdowns, and the alert table with
+  severity, rule, verdict and text filters that live in the URL.
+- **Cases**: drag-and-drop PCAP upload with real upload progress, then live
+  replay progress, plus the case list.
+- **Case detail**: a risk gauge with the factors behind the score,
+  autosaving analyst notes, correlated activity drawn as kill-chain steps per
+  offending host, an interactive **attack graph**, per-case activity, alerts,
+  an export menu, and the **Overall AI Review**.
+- **Settings**: theme (system/light/dark), density, reduce-motion, live
+  updates, instance status, and rule cards with on/off switches, summaries
+  and current thresholds.
 
-Alert and host detail open in a slide-over drawer with the verdict controls.
-The UI is light/dark themed and degrades to clear messages when AI is not
-configured.
+Alert and host detail open in a slide-over drawer: the flow, timing and
+confidence at a glance, verdict buttons, why the rule fired, highlighted
+evidence, copyable investigation commands, related alerts, and prev/next
+navigation through the table.
+
+**Fast to drive from the keyboard.** <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>
+opens a command palette over views, actions, cases, alerts and hosts (type
+`#12` or an IP to jump). <kbd>J</kbd>/<kbd>K</kbd> move through alerts,
+<kbd>Enter</kbd> opens one, <kbd>1</kbd>-<kbd>5</kbd> set the verdict in the
+drawer, <kbd>X</kbd> selects rows for a bulk verdict, <kbd>G</kbd> then
+<kbd>O</kbd>/<kbd>C</kbd>/<kbd>S</kbd> navigates, and <kbd>?</kbd> lists the
+rest. Every verdict change offers a one-click undo.
+
+**Live without the polling cost.** The console asks the server for a single
+change counter every few seconds and refreshes only when it moves; nothing
+is fetched or re-rendered while the workspace is idle, polling pauses in
+background tabs, and new alerts flash into the table as they arrive. Data
+endpoints also answer `304 Not Modified` when nothing changed.
+
+The UI is light/dark themed, honors `prefers-reduced-motion`, works at phone
+width, and degrades to clear messages when AI is not configured. With
+`SENTRYD_API_TOKEN` set, it asks for the token once and sends it with every
+request and download.
+
+![overview, dark theme](docs/img/dashboard-dark.png)
 
 ![case detail](docs/img/case-detail.png)
 
+![attack graph](docs/img/attack-graph.png)
+
 ![alert drawer](docs/img/alert-drawer.png)
+
+![command palette](docs/img/command-palette.png)
 
 ## Interpreting alerts
 
@@ -202,6 +238,16 @@ Each alert answers three questions before you touch the AI layer:
   AI is needed to confirm the finding.
 - **What to do next.** A suggested investigation command (sentryd filters or a
   `tshark` display filter) and the related alerts on the same hosts.
+
+**Correlation and risk.** Alerts from one offending source form a cluster
+whose phases are listed in kill-chain order (reconnaissance, man-in-the-middle
+positioning, service access, command-and-control, unusual volume). A
+watchlisted-port hit that is one of a port scan's own probes is folded into
+reconnaissance instead of reading as a separate intrusion step. Each cluster
+gets a 0-100 risk score built from named, additive factors (peak severity,
+evidence confidence, multi-stage escalation, analyst verdicts), and the case
+is as risky as its riskiest cluster. Closing alerts as false positive or
+expected lowers the score; confirming one raises it. No AI is involved.
 
 Work a case by assigning a **verdict** to each alert (confirmed, false
 positive, expected, ignored, dismissed) from the drawer or
@@ -223,11 +269,14 @@ Interactive OpenAPI docs are served at `/docs`. Core endpoints:
 | POST | `/api/pcaps/upload` | upload a .pcap/.pcapng, creates a case and replays it |
 | POST | `/api/replay` | replay a server-side path (`{"path": ...}`) |
 | GET | `/api/cases/{id}/status` | replay progress and status |
-| GET | `/api/cases` / `/api/cases/{id}` | list cases / case detail with clusters and stats |
+| GET | `/api/cases` / `/api/cases/{id}` | list cases / case detail with clusters, phases, risk and stats |
 | POST | `/api/cases/{id}/archive` | archive a case |
 | DELETE | `/api/cases/{id}` | delete a case and its alerts |
-| GET | `/api/alerts` / `/api/alerts/{id}` | list (filters: severity/rule/status/case/host) / detail with related + hint |
+| GET | `/api/alerts` / `/api/alerts/{id}` | list (filters: severity/rule/status/case/host/since/until) / detail with related + hint |
 | POST | `/api/alerts/{id}/status` | set the analyst verdict |
+| POST | `/api/alerts/bulk-status` | one verdict for many alerts (`{"ids": [...], "status": ...}`) |
+| GET | `/api/dashboard` | stats, timeline and case list in one round trip |
+| GET | `/api/revision` | change counter; poll it and refetch only when it moves |
 | POST | `/api/alerts/{id}/explain` | AI writeup for one alert |
 | POST | `/api/cases/{id}/triage` | overall AI review of a case |
 | GET | `/api/cases/{id}/report?format=md\|json` | case report download |
@@ -236,7 +285,9 @@ Interactive OpenAPI docs are served at `/docs`. Core endpoints:
 | GET | `/api/hosts/{ip}` / `/api/status` | host summary / instance status |
 
 AI endpoints return `503` with a clear message when no provider is
-configured; detection and export endpoints never need one.
+configured; detection and export endpoints never need one. Data `GET`s carry
+an `ETag` tied to the store revision and answer `304` to a matching
+`If-None-Match`, so repeat reads of unchanged data skip the query entirely.
 
 **Hardening.** The API binds to `127.0.0.1` by default. Set
 `SENTRYD_API_TOKEN` to require an `Authorization: Bearer <token>` header on
@@ -254,10 +305,12 @@ Both interfaces expose the same core capabilities over one engine and store:
 | list and filter alerts | `alerts list` | Dashboard table |
 | alert detail (evidence, why, next step) | `alerts show` | alert drawer |
 | cases: list / show / archive / delete / notes / clear | `cases ...` | Cases + case detail |
-| set alert verdict | `alerts status <id> <verdict>` | drawer verdict buttons |
+| set alert verdict | `alerts status <id> <verdict>` | drawer verdict buttons / keys 1-5 |
+| bulk verdicts with undo | `POST /api/alerts/bulk-status` | table multi-select + bulk bar |
+| case risk score and factors | `cases show`, markdown report | risk gauge, cluster risk |
 | per-alert AI explanation | `triage <id>` | Explain button |
 | overall AI review | `triage latest\|--case\|--pcap` | Overall AI Review button |
-| host summary | (in `alerts show` related) | host drawer |
+| host summary | (in `alerts show` related) | host drawer, attack graph |
 | exports (json/csv/md) | `export ...` | case page download buttons |
 | rules: list / explain / lint / test | `rules ...` | Settings (list) / `GET /api/rules` |
 | enable / disable rules | `rules enable/disable` | Settings toggles |
@@ -298,11 +351,11 @@ src/sentryd/
 ├── sources/     pcap replay, live capture, log tailing into Events
 ├── rules/       one module per detection rule + config-driven signatures
 ├── triage/      TriageProvider protocol, OpenRouter impl, digest + review
-├── storage/     SQLite alert/case store (stdlib sqlite3, in-place migration)
+├── storage/     SQLite alert/case store (stdlib sqlite3, WAL, in-place migration)
 ├── runner.py    case orchestration shared by CLI and web
 ├── export.py    JSON/CSV/markdown exports
 ├── dashboard/   Textual terminal UI
-└── web/         FastAPI REST API + static single-page console
+└── web/         FastAPI REST API + static console (ES modules in static/js/)
 tests/           per-rule positive/negative tests, synthetic pcap fixtures
 ```
 
