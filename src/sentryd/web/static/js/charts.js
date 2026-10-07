@@ -287,7 +287,8 @@ export function attackGraph(container, alerts, { onHost } = {}) {
   });
 
   const W = Math.max(container.clientWidth - 12, 560);
-  const ROW = 54;
+  // Middle-column labels sit above and below their node, so give them room.
+  const ROW = cols.length === 3 ? 66 : 54;
   const rows = Math.max(...cols.map((c) => c.nodes.length + (c.more ? 1 : 0)));
   const H = rows * ROW + 46;
   const xs = cols.length === 1 ? [W / 2] : cols.length === 2 ? [180, W - 180] : [180, W / 2, W - 180];
@@ -319,8 +320,8 @@ export function attackGraph(container, alerts, { onHost } = {}) {
 
   const label = (n, side) => {
     const sub = [n.out ? `${n.out} out` : "", n.in ? `${n.in} in` : ""].filter(Boolean).join(" · ");
-    const [anchor, x, y] = side === "left" ? ["end", -16, 4] : side === "right" ? ["start", 16, 4] : ["middle", 0, -17];
-    const subY = side === "mid" ? y - 14 : y + 14;
+    const [anchor, x, y] = side === "left" ? ["end", -16, 4] : side === "right" ? ["start", 16, 4] : ["middle", 0, -16];
+    const subY = side === "mid" ? 25 : y + 14;
     return `<text x="${x}" y="${y}" text-anchor="${anchor}">${esc(n.ip)}</text>
       <text class="sub" x="${x}" y="${subY}" text-anchor="${anchor}">${sub}</text>`;
   };
