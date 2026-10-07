@@ -129,6 +129,8 @@ def case_report_markdown(case: Case, alerts: list[Alert], clusters: list[Cluster
                 f"### {cluster.source} ({cluster.max_severity})",
                 "",
                 f"- **Chain:** {cluster.chain}",
+                f"- **Risk:** {cluster.risk['score']}/100 ({cluster.risk['level']}): "
+                + "; ".join(f"{f['factor']} +{f['points']}" for f in cluster.risk["factors"]),
                 f"- **Targets:** {targets}",
                 f"- **Window:** {_iso(cluster.first_seen)} to {_iso(cluster.last_seen)} UTC",
                 f"- **Alerts:** {', '.join(f'#{i}' for i in [a.id for a in cluster.alerts])}",

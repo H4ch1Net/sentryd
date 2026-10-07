@@ -62,6 +62,18 @@ def _alert_entry(alert: Alert) -> dict:
     return {k: v for k, v in entry.items() if v not in (None, "", {})}
 
 
+def _cluster_entry(cluster: Cluster) -> dict:
+    """Cluster summary with id/target lists capped: a horizontal sweep can
+    touch hundreds of hosts, which must not crowd out the alert sample."""
+    entry = cluster.to_dict()
+    entry["targets"] = _trim_evidence({"t": entry["targets"]})["t"]
+    entry["alert_ids"] = _trim_evidence({"a": entry["alert_ids"]})["a"]
+    entry["phases"] = [
+        {k: v for k, v in phase.items() if k != "alert_ids"} for phase in entry["phases"]
+    ]
+    return entry
+
+
 def _timeline(alerts: list[Alert], buckets: int = 12) -> list[dict]:
     if not alerts:
         return []
@@ -123,7 +135,7 @@ def build_case_digest(
         "top_ports": [
             {"port": port, "alerts": n} for port, n in port_counts.most_common(10)
         ],
-        "correlated_clusters": [c.to_dict() for c in clusters[:8]],
+        "correlated_clusters": [_cluster_entry(c) for c in clusters[:8]],
         "timeline": _timeline(alerts),
         "alerts": [_alert_entry(a) for a in ranked[:max_alerts]],
     }

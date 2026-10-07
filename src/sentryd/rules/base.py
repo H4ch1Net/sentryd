@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -41,6 +42,13 @@ class Rule(ABC):
     @abstractmethod
     def process(self, event: Event) -> list[Alert]:
         """Inspect one event; return zero or more alerts."""
+
+
+def rule_doc(rule_id: str) -> str:
+    """A registered rule's module docstring: what it detects and how. Shown
+    by ``sentryd rules`` and the web Settings view."""
+    cls = RULE_REGISTRY[rule_id]
+    return (sys.modules[cls.__module__].__doc__ or "").strip()
 
 
 def build_rules(config: dict, disabled: set[str] = frozenset()) -> list[Rule]:
