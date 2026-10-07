@@ -1,6 +1,12 @@
 """SQLite persistence: alerts and cases. Thin repository over stdlib
 sqlite3, no ORM. Existing databases are migrated in place by adding any
-missing columns (idempotent, checked against PRAGMA table_info)."""
+missing columns (idempotent, checked against PRAGMA table_info).
+
+Connections are cheap to open (the web API opens one per request): the
+schema/migration pass only runs when the file's ``user_version`` is behind
+``SCHEMA_VERSION``. The database runs in WAL mode so the UI can read while a
+background replay writes, and a trigger-maintained ``revision`` counter lets
+clients ask "did anything change?" with a single-row read."""
 
 from __future__ import annotations
 
@@ -38,6 +44,9 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts (severity);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts (status);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts (ts);
+CREATE INDEX IF NOT EXISTS idx_alerts_src ON alerts (src);
+CREATE INDEX IF NOT EXISTS idx_alerts_dst ON alerts (dst);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -62,7 +71,39 @@ CREATE TABLE IF NOT EXISTS cases (
     ai_report        TEXT,
     ai_report_at     TEXT
 );
+
+-- Monotonic change counter, bumped by triggers on every alert/case write
+-- (from any process: CLI replays and the web worker share it).
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO meta (key, value) VALUES ('revision', 0);
 """
+
+_REVISION_TRIGGERS = "\n".join(
+    f"CREATE TRIGGER IF NOT EXISTS rev_{table}_{op.lower()} AFTER {op} ON {table} "
+    f"BEGIN UPDATE meta SET value = value + 1 WHERE key = 'revision'; END;"
+    for table in ("alerts", "cases")
+    for op in ("INSERT", "UPDATE", "DELETE")
+)
+
+# Bump whenever SCHEMA, the triggers, or _migrate change; databases whose
+# user_version is behind get the idempotent schema/migration pass on open.
+SCHEMA_VERSION = 4
+
+# Severity weights for host involvement scoring (matches the AI digest).
+_SEVERITY_WEIGHT_SQL = (
+    "CASE severity WHEN 'low' THEN 1 WHEN 'medium' THEN 2 "
+    "WHEN 'high' THEN 3 WHEN 'critical' THEN 4 ELSE 1 END"
+)
+
+# Case rows carry their alert count via a correlated subquery (indexed), so
+# listing cases is one query instead of one extra COUNT per case.
+_CASE_SELECT = (
+    "SELECT cases.*, (SELECT COUNT(*) FROM alerts WHERE alerts.case_id = cases.id) "
+    "AS alert_count FROM cases"
+)
 
 # Columns added after the first release; applied to pre-existing databases.
 _ALERT_MIGRATIONS = {
@@ -84,11 +125,15 @@ class AlertStore:
 
     def __init__(self, path: str | Path = DEFAULT_DB_PATH) -> None:
         self.path = Path(path)
-        self._conn = sqlite3.connect(self.path)
+        # timeout = busy wait: a background replay may hold the write lock.
+        self._conn = sqlite3.connect(self.path, timeout=10.0)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.executescript(SCHEMA)
-        self._migrate()
+        self._conn.execute("PRAGMA synchronous = NORMAL")  # safe under WAL
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            self._conn.execute("PRAGMA journal_mode = WAL")  # persists in the file
+            self._conn.executescript(SCHEMA + _REVISION_TRIGGERS)
+            self._migrate()
 
     def _migrate(self) -> None:
         existing = {
@@ -96,11 +141,27 @@ class AlertStore:
         }
         for column, decl in _ALERT_MIGRATIONS.items():
             if column not in existing:
-                self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {column} {decl}")
+                try:
+                    self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {column} {decl}")
+                except sqlite3.OperationalError as exc:
+                    # Another connection migrated concurrently; that's fine.
+                    if "duplicate column" not in str(exc):
+                        raise
         # Created here, not in SCHEMA: on a pre-case database the column only
-        # exists after the ALTERs above have run.
-        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_case ON alerts (case_id)")
+        # exists after the ALTERs above have run. (case_id, ts) also serves
+        # plain case_id lookups, so the old single-column index is dropped.
+        self._conn.execute("DROP INDEX IF EXISTS idx_alerts_case")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alerts_case_ts ON alerts (case_id, ts)"
+        )
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
+
+    def revision(self) -> int:
+        """Change counter for alerts and cases; equal values mean nothing
+        a client displays has changed since it last looked."""
+        row = self._conn.execute("SELECT value FROM meta WHERE key = 'revision'").fetchone()
+        return row["value"] if row else 0
 
     def __enter__(self) -> "AlertStore":
         return self
@@ -221,11 +282,34 @@ class AlertStore:
         )
         self._conn.commit()
 
+    def set_status_many(self, alert_ids: list[int], status: AlertStatus) -> int:
+        """Apply one verdict to many alerts in a single transaction; returns
+        how many rows exist and were updated."""
+        ids = sorted(set(alert_ids))
+        updated = 0
+        for start in range(0, len(ids), 500):  # stay under SQLite's variable cap
+            chunk = ids[start : start + 500]
+            marks = ",".join("?" * len(chunk))
+            updated += self._conn.execute(
+                f"UPDATE alerts SET status = ? WHERE id IN ({marks})",
+                (status.value, *chunk),
+            ).rowcount
+        self._conn.commit()
+        return updated
+
+    @staticmethod
+    def _scope(case_id: int | None, *extra: str) -> tuple[str, list]:
+        """WHERE clause (possibly empty) for an optional case scope plus any
+        extra fixed conditions."""
+        clauses = [*extra]
+        params: list = []
+        if case_id is not None:
+            clauses.append("case_id = ?")
+            params.append(case_id)
+        return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
+
     def stats(self, case_id: int | None = None) -> dict:
-        where, params = ("WHERE case_id = ?", [case_id]) if case_id is not None else ("", [])
-        total = self._conn.execute(
-            f"SELECT COUNT(*) AS n FROM alerts {where}", params
-        ).fetchone()["n"]
+        where, params = self._scope(case_id)
         by_severity = {
             row["severity"]: row["n"]
             for row in self._conn.execute(
@@ -238,55 +322,64 @@ class AlertStore:
                 f"SELECT rule_id, COUNT(*) AS n FROM alerts {where} GROUP BY rule_id", params
             )
         }
-        sources = self._conn.execute(
-            f"SELECT COUNT(DISTINCT src) AS n FROM alerts "
-            f"{where + ' AND' if where else 'WHERE'} src IS NOT NULL",
+        by_status = {
+            row["status"]: row["n"]
+            for row in self._conn.execute(
+                f"SELECT status, COUNT(*) AS n FROM alerts {where} GROUP BY status", params
+            )
+        }
+        totals = self._conn.execute(
+            f"SELECT COUNT(DISTINCT src) AS sources, "
+            f"COALESCE(SUM(ai_summary IS NOT NULL), 0) AS triaged FROM alerts {where}",
             params,
-        ).fetchone()["n"]
-        triaged = self._conn.execute(
-            f"SELECT COUNT(*) AS n FROM alerts "
-            f"{where + ' AND' if where else 'WHERE'} ai_summary IS NOT NULL",
-            params,
-        ).fetchone()["n"]
+        ).fetchone()
         return {
-            "total": total,
+            "total": sum(by_severity.values()),
             "by_severity": by_severity,
             "by_rule": by_rule,
-            "sources": sources,
-            "triaged": triaged,
+            "by_status": by_status,
+            "open": by_status.get(AlertStatus.NEW.value, 0),
+            "sources": totals["sources"],
+            "triaged": totals["triaged"],
             "top_hosts": self._top_hosts(case_id),
             "top_ports": self._top_ports(case_id),
         }
 
     def _top_hosts(self, case_id: int | None, limit: int = 8) -> list[dict]:
         """Hosts ranked by involvement: a source hit weighs more than a target
-        hit and scales with severity, matching the AI digest scoring."""
-        rank = {"low": 1, "medium": 2, "high": 3, "critical": 4, "triaged": 1}
-        scores: dict[str, dict] = {}
-        clause = "WHERE case_id = ?" if case_id is not None else ""
-        params = [case_id] if case_id is not None else []
-        for row in self._conn.execute(
-            f"SELECT src, dst, severity FROM alerts {clause}", params
-        ):
-            weight = rank.get(row["severity"], 1)
-            if row["src"]:
-                entry = scores.setdefault(row["src"], {"host": row["src"], "score": 0, "alerts": 0})
-                entry["score"] += 1 + weight
-                entry["alerts"] += 1
-            if row["dst"]:
-                entry = scores.setdefault(row["dst"], {"host": row["dst"], "score": 0, "alerts": 0})
-                entry["score"] += 1
-        ranked = sorted(scores.values(), key=lambda e: e["score"], reverse=True)
-        return ranked[:limit]
+        hit and scales with severity, matching the AI digest scoring.
+        Aggregated in SQL, so cost doesn't grow with Python-side row loops."""
+        src_where, params = self._scope(case_id, "src IS NOT NULL")
+        dst_where, _ = self._scope(case_id, "dst IS NOT NULL")
+        rows = self._conn.execute(
+            f"""
+            SELECT host, SUM(score) AS score, SUM(as_src) AS alerts,
+                   SUM(1 - as_src) AS targeted, MIN(id) AS first_id
+            FROM (
+                SELECT src AS host, 1 + {_SEVERITY_WEIGHT_SQL} AS score, 1 AS as_src, id
+                FROM alerts {src_where}
+                UNION ALL
+                SELECT dst AS host, 1 AS score, 0 AS as_src, id
+                FROM alerts {dst_where}
+            )
+            GROUP BY host ORDER BY score DESC, first_id LIMIT ?
+            """,
+            [*params, *params, limit],
+        ).fetchall()
+        return [
+            {
+                "host": r["host"],
+                "score": r["score"],
+                "alerts": r["alerts"],
+                "targeted": r["targeted"],
+            }
+            for r in rows
+        ]
 
     def _top_ports(self, case_id: int | None, limit: int = 8) -> list[dict]:
-        clause = "WHERE dst_port IS NOT NULL"
-        params: list = []
-        if case_id is not None:
-            clause += " AND case_id = ?"
-            params.append(case_id)
+        where, params = self._scope(case_id, "dst_port IS NOT NULL")
         rows = self._conn.execute(
-            f"SELECT dst_port AS port, COUNT(*) AS alerts FROM alerts {clause} "
+            f"SELECT dst_port AS port, COUNT(*) AS alerts FROM alerts {where} "
             f"GROUP BY dst_port ORDER BY alerts DESC, dst_port LIMIT ?",
             [*params, limit],
         ).fetchall()
@@ -319,7 +412,7 @@ class AlertStore:
 
     def timeline(self, buckets: int = 30, case_id: int | None = None) -> dict:
         """Alert counts bucketed over the stored alerts' event-time span."""
-        where, params = ("WHERE case_id = ?", [case_id]) if case_id is not None else ("", [])
+        where, params = self._scope(case_id)
         row = self._conn.execute(
             f"SELECT MIN(ts) AS lo, MAX(ts) AS hi, COUNT(*) AS n FROM alerts {where}", params
         ).fetchone()
@@ -331,12 +424,16 @@ class AlertStore:
             {"start": lo + i * width, "end": lo + (i + 1) * width, "count": 0, "by_severity": {}}
             for i in range(buckets)
         ]
-        for alert in self._conn.execute(f"SELECT ts, severity FROM alerts {where}", params):
-            bucket = out[min(int((alert["ts"] - lo) / width), buckets - 1)]
-            bucket["count"] += 1
-            bucket["by_severity"][alert["severity"]] = (
-                bucket["by_severity"].get(alert["severity"], 0) + 1
-            )
+        # Bucketed in SQL: one grouped row per (bucket, severity) comes back
+        # instead of every alert row.
+        for row in self._conn.execute(
+            f"SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, severity, COUNT(*) AS n "
+            f"FROM alerts {where} GROUP BY b, severity",
+            [lo, width, buckets - 1, *params],
+        ):
+            bucket = out[row["b"]]
+            bucket["count"] += row["n"]
+            bucket["by_severity"][row["severity"]] = row["n"]
         return {"start": lo, "end": hi, "buckets": out}
 
     def host_summary(self, ip: str, case_id: int | None = None) -> dict:
@@ -388,15 +485,15 @@ class AlertStore:
         return case
 
     def get_case(self, case_id: int) -> Case | None:
-        row = self._conn.execute("SELECT * FROM cases WHERE id = ?", (case_id,)).fetchone()
+        row = self._conn.execute(f"{_CASE_SELECT} WHERE id = ?", (case_id,)).fetchone()
         return self._row_to_case(row) if row else None
 
     def latest_case(self) -> Case | None:
-        row = self._conn.execute("SELECT * FROM cases ORDER BY id DESC LIMIT 1").fetchone()
+        row = self._conn.execute(f"{_CASE_SELECT} ORDER BY id DESC LIMIT 1").fetchone()
         return self._row_to_case(row) if row else None
 
     def list_cases(self, include_archived: bool = True, limit: int = 100) -> list[Case]:
-        query = "SELECT * FROM cases"
+        query = _CASE_SELECT
         if not include_archived:
             query += " WHERE status != 'archived'"
         query += " ORDER BY id DESC LIMIT ?"
@@ -497,7 +594,8 @@ class AlertStore:
             byte_count=row["byte_count"],
         )
 
-    def _row_to_case(self, row: sqlite3.Row) -> Case:
+    @staticmethod
+    def _row_to_case(row: sqlite3.Row) -> Case:
         return Case(
             id=row["id"],
             name=row["name"],
@@ -509,7 +607,7 @@ class AlertStore:
             pcap_size=row["pcap_size"],
             packet_count=row["packet_count"],
             events_processed=row["events_processed"],
-            alert_count=self.case_alert_count(row["id"]),
+            alert_count=row["alert_count"],
             start_ts=row["start_ts"],
             end_ts=row["end_ts"],
             error=row["error"],

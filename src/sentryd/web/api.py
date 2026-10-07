@@ -4,10 +4,16 @@ Interactive OpenAPI docs are served at /docs. A fresh store connection is
 opened per request (sqlite handles are thread-bound and cheap); PCAP replay
 runs in a daemon thread and publishes progress through the case row, so
 status polling is just a case read.
+
+Change detection: every alert/case write bumps the store revision. Data GETs
+carry an ETag derived from it and answer 304 without running their queries
+when nothing changed, and /api/revision lets the console skip polling work
+entirely while the workspace is idle.
 """
 
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import threading
@@ -17,15 +23,16 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sentryd import __version__
 from sentryd.config import load_config
+from sentryd.core.alerts import VERDICTS, AlertStatus
 from sentryd.core.cases import CaseStatus
-from sentryd.core.correlate import correlate, investigation_hint, related_alerts
+from sentryd.core.correlate import case_risk, correlate, investigation_hint, related_alerts
 from sentryd.export import alerts_to_csv, alerts_to_json, case_report_markdown, case_to_json
 from sentryd.runner import create_pending_case, run_case
-from sentryd.rules.base import RULE_REGISTRY
+from sentryd.rules.base import RULE_REGISTRY, rule_doc
 from sentryd.sources.pcap import PcapFileSource
 from sentryd.storage.store import AlertStore
 from sentryd.triage.base import create_provider
@@ -54,7 +61,23 @@ class StatusRequest(BaseModel):
     status: str
 
 
+class BulkStatusRequest(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=1000)
+    status: str
+
+
 _STATUS_PATTERN = "^(new|confirmed|false_positive|expected|ignored|dismissed|triaged)$"
+
+# Read endpoints whose responses depend only on stored alerts/cases, and so
+# can be revalidated against the store revision (ETag / 304).
+_REVALIDATED_PREFIXES = (
+    "/api/alerts",
+    "/api/stats",
+    "/api/timeline",
+    "/api/cases",
+    "/api/hosts",
+    "/api/dashboard",
+)
 
 
 def _safe_filename(name: str) -> str:
@@ -79,21 +102,39 @@ def create_app(
     uploads = uploads_dir or Path(db_path).parent / "uploads"
     # Token gate is off unless a token is configured (keeps localhost simple).
     token = api_token if api_token is not None else os.environ.get("SENTRYD_API_TOKEN", "").strip()
+    # Part of every ETag, so a restarted (possibly upgraded) server never
+    # validates a browser's cached body from a previous build.
+    boot_id = uuid.uuid4().hex[:8]
+
+    def with_store(fn):
+        with AlertStore(db_path) as store:
+            return fn(store)
+
+    # Registered before the token gate so the gate wraps it (Starlette runs
+    # the last-registered middleware outermost): no 304s without a token.
+    @app.middleware("http")
+    async def revalidate(request: Request, call_next):
+        if request.method != "GET" or not request.url.path.startswith(_REVALIDATED_PREFIXES):
+            return await call_next(request)
+        etag = f'W/"{boot_id}-{with_store(lambda s: s.revision())}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        response = await call_next(request)
+        if response.status_code == 200:
+            response.headers.update(headers)
+        return response
 
     @app.middleware("http")
     async def require_token(request: Request, call_next):
         if token and request.url.path.startswith("/api/"):
             header = request.headers.get("authorization", "")
-            if header != f"Bearer {token}":
+            if not hmac.compare_digest(header.encode(), f"Bearer {token}".encode()):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "missing or invalid API token"},
                 )
         return await call_next(request)
-
-    def with_store(fn):
-        with AlertStore(db_path) as store:
-            return fn(store)
 
     def _get_case_or_404(store: AlertStore, case_id: int):
         case = store.get_case(case_id)
@@ -154,12 +195,18 @@ def create_app(
 
         return with_store(fetch)
 
+    @app.post("/api/alerts/bulk-status")
+    def set_alert_status_bulk(request: BulkStatusRequest) -> dict:
+        """Apply one analyst verdict to many alerts at once."""
+        if request.status not in {v.value for v in VERDICTS}:
+            raise HTTPException(status_code=422, detail=f"invalid status {request.status!r}")
+        updated = with_store(
+            lambda s: s.set_status_many(request.ids, AlertStatus(request.status))
+        )
+        return {"updated": updated, "status": request.status}
+
     @app.post("/api/alerts/{alert_id}/status")
     def set_alert_status(alert_id: int, request: StatusRequest) -> dict:
-        import re
-
-        from sentryd.core.alerts import AlertStatus
-
         if not re.match(_STATUS_PATTERN, request.status):
             raise HTTPException(status_code=422, detail=f"invalid status {request.status!r}")
 
@@ -200,6 +247,36 @@ def create_app(
     def timeline(buckets: int = Query(30, ge=4, le=120), case: int | None = None) -> dict:
         return with_store(lambda s: s.timeline(buckets, case_id=case))
 
+    @app.get("/api/revision")
+    def revision() -> dict:
+        """Cheap change probe: poll this, refetch only when it moves."""
+        return {"revision": with_store(lambda s: s.revision())}
+
+    @app.get("/api/dashboard")
+    def dashboard(
+        case: int | None = None, buckets: int = Query(40, ge=4, le=120)
+    ) -> dict:
+        """Everything the dashboard's KPIs, charts and case picker need, in
+        one round trip on one connection."""
+
+        def fetch(store: AlertStore) -> dict:
+            return {
+                "revision": store.revision(),
+                "stats": store.stats(case_id=case),
+                "timeline": store.timeline(buckets, case_id=case),
+                "cases": [
+                    {
+                        "id": c.id,
+                        "name": c.name,
+                        "status": c.status.value,
+                        "alert_count": c.alert_count,
+                    }
+                    for c in store.list_cases()
+                ],
+            }
+
+        return with_store(fetch)
+
     @app.get("/api/hosts/{ip}")
     def host(ip: str, case: int | None = None) -> dict:
         return with_store(lambda s: s.host_summary(ip, case_id=case))
@@ -215,6 +292,7 @@ def create_app(
             out.append(
                 {
                     "rule_id": rule_id,
+                    "summary": rule_doc(rule_id).split("\n\n")[0].replace("\n", " "),
                     "config_enabled": config_enabled,
                     "disabled": rule_id in disabled,
                     "effective_enabled": config_enabled and rule_id not in disabled,
@@ -313,9 +391,11 @@ def create_app(
         def fetch(store: AlertStore) -> dict:
             case = _get_case_or_404(store, case_id)
             alerts = store.list(case_id=case_id, limit=500)
+            clusters = correlate(alerts)
             return {
                 "case": case.to_dict(),
-                "clusters": [c.to_dict() for c in correlate(alerts)],
+                "clusters": [c.to_dict() for c in clusters],
+                "risk": case_risk(clusters),
                 "stats": store.stats(case_id=case_id),
             }
 

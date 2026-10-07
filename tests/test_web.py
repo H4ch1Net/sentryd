@@ -105,3 +105,89 @@ def test_frontend_served(client):
     assert "sentryd" in page.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
+
+
+# -- change detection ------------------------------------------------------------
+
+
+def test_revision_endpoint_tracks_writes(client):
+    before = client.get("/api/revision").json()["revision"]
+    client.post("/api/alerts/1/status", json={"status": "confirmed"})
+    assert client.get("/api/revision").json()["revision"] > before
+
+
+def test_data_gets_revalidate_with_etag(client):
+    first = client.get("/api/stats")
+    etag = first.headers["etag"]
+    assert first.headers["cache-control"] == "no-cache"
+
+    unchanged = client.get("/api/stats", headers={"If-None-Match": etag})
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+
+    client.post("/api/alerts/1/status", json={"status": "confirmed"})
+    changed = client.get("/api/stats", headers={"If-None-Match": etag})
+    assert changed.status_code == 200
+    assert changed.headers["etag"] != etag
+    assert changed.json()["by_status"]["confirmed"] == 1
+
+
+def test_non_data_endpoints_are_not_etagged(client):
+    assert "etag" not in client.get("/api/status").headers
+    assert "etag" not in client.get("/api/rules").headers
+
+
+def test_revalidation_sits_behind_the_token_gate(tmp_path):
+    gated = TestClient(create_app(tmp_path / "t.db", api_token="s3cret"))
+    auth = {"Authorization": "Bearer s3cret"}
+    etag = gated.get("/api/stats", headers=auth).headers["etag"]
+    # a cached validator must not let an unauthenticated client past the gate
+    assert gated.get("/api/stats", headers={"If-None-Match": etag}).status_code == 401
+
+
+def test_dashboard_bundles_stats_timeline_and_cases(client):
+    data = client.get("/api/dashboard?buckets=8").json()
+
+    assert data["revision"] == client.get("/api/revision").json()["revision"]
+    assert data["stats"]["total"] == 2
+    assert len(data["timeline"]["buckets"]) == 8
+    assert data["cases"] == []
+    assert client.get("/api/dashboard?buckets=2").status_code == 422
+
+
+def test_bulk_verdicts(client):
+    def bulk(ids, status):
+        return client.post("/api/alerts/bulk-status", json={"ids": ids, "status": status})
+
+    assert bulk([1, 2, 99], "expected").json() == {"updated": 2, "status": "expected"}
+    assert {a["status"] for a in client.get("/api/alerts").json()["alerts"]} == {"expected"}
+
+    assert bulk([1], "triaged").status_code == 422  # legacy value, not a verdict
+    assert bulk([], "new").status_code == 422
+
+
+def test_rules_endpoint_includes_summaries(client):
+    rules = {r["rule_id"]: r for r in client.get("/api/rules").json()["rules"]}
+    assert "beacon" in rules
+    assert rules["port_scan"]["summary"].startswith("Port scan detection")
+
+
+def test_case_detail_reports_risk_and_phases(tmp_path):
+    from sentryd.core.cases import Case
+
+    db = tmp_path / "case.db"
+    with AlertStore(db) as store:
+        case = store.create_case(Case(id=None, name="demo", source_kind="pcap", source="x"))
+        store.insert(Alert(rule_id="port_scan", severity=Severity.HIGH, confidence=0.7,
+                           title="scan", ts=100.0, src="10.0.0.66", dst="10.0.0.9",
+                           evidence={}, case_id=case.id))
+        store.insert(Alert(rule_id="beacon", severity=Severity.MEDIUM, confidence=0.8,
+                           title="beacon", ts=200.0, src="10.0.0.66", dst="198.51.100.7",
+                           evidence={}, case_id=case.id, dst_port=443))
+
+    detail = TestClient(create_app(db)).get(f"/api/cases/{case.id}").json()
+
+    cluster = detail["clusters"][0]
+    assert [p["phase"] for p in cluster["phases"]] == ["reconnaissance", "command-and-control"]
+    assert detail["risk"]["source"] == "10.0.0.66"
+    assert detail["risk"]["score"] == cluster["risk"]["score"] == 60 + 7 + 10
