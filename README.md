@@ -171,19 +171,10 @@ The API listens on `127.0.0.1` by default. Set `SENTRYD_API_TOKEN` to require
 a bearer token, and `SENTRYD_PCAP_DIR` to allow server-side replay from a
 directory. Put TLS or a reverse proxy in front before exposing it publicly.
 
-## Project layout
+## For contributors
 
-```
-src/sentryd/
-├── core/      events, alerts, cases, rule engine, correlation
-├── sources/   pcap, live capture, log tailing
-├── rules/     one module per rule, plus config-driven signatures
-├── triage/    AI providers, digest, review
-├── storage/   SQLite store
-└── web/       FastAPI app and static console
-```
-
-Architecture notes for contributors are in [AGENTS.md](AGENTS.md).
+The package lives in `src/sentryd/`. Architecture notes and conventions are in
+[AGENTS.md](AGENTS.md).
 
 ## Testing
 
