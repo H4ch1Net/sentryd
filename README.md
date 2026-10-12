@@ -7,6 +7,8 @@ fire.
 The AI never decides what gets detected. The whole tool works without an API
 key.
 
+Built with Python 3.11+, scapy, FastAPI, SQLite, Typer, and Textual.
+
 ![sentryd dashboard](docs/img/dashboard.png)
 
 ## What it detects
@@ -23,6 +25,31 @@ Each alert includes a severity, a confidence score, and the raw evidence
 behind it (ports, MACs, byte counts), so you can check the finding yourself.
 
 Thresholds and watchlists live in [`config/signatures.yaml`](config/signatures.yaml).
+
+## How it works
+
+Packet replay, live capture, and log tailing all produce the same `Event`
+records. Rules never touch packets, so a rule behaves the same on a file and on
+a live interface, and the tests run the same code path as live capture.
+
+Windows, baselines, and dedup cooldowns all run on packet timestamps, so a
+replay behaves like the original capture.
+
+Repeat hits from the same rule, source, and destination merge into one alert
+within a cooldown. A rule that can raise several distinct findings for the same
+host pair sets its own key, so those never merge.
+
+`port_scan` counts SYN-only attempts in a sliding window and tracks the distinct
+host/port targets each source reaches. `traffic_spike` keeps an EWMA baseline
+per host and time bucket and fires on a ratio over that baseline, with an
+absolute floor. `arp_spoof` tracks which MAC each IP has claimed and flags
+conflicts.
+
+Alerts and cases live in SQLite through the standard library, with no ORM.
+Schema changes migrate in place, so older databases keep working.
+
+The AI layer runs only when you ask it to. It gets a size-capped summary of
+alert metadata, never packets.
 
 ## Setup
 
