@@ -3,212 +3,314 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>sentryd console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 21 6v6c0 5.5-3.8 9-9 10.5C6.8 21 3 17.5 3 12V6Z' fill='%232a78d6'/%3E%3Cpath d='M12 12 16.5 8.2' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='2.2' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
   <script>
-    // Apply the saved theme before first paint to avoid a flash.
-    const saved = localStorage.getItem("sentryd-theme");
-    if (saved) document.documentElement.dataset.theme = saved;
+    // Apply saved appearance before first paint to avoid a flash.
+    try {
+      const prefs = JSON.parse(localStorage.getItem("sentryd-prefs") || "{}");
+      const root = document.documentElement;
+      if (prefs.theme === "light" || prefs.theme === "dark") root.dataset.theme = prefs.theme;
+      if (prefs.motion === "reduced") root.dataset.motion = "reduced";
+      if (prefs.density === "compact") root.dataset.density = "compact";
+    } catch { /* storage unavailable: defaults apply */ }
   </script>
+  <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header class="appbar">
-    <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 2 L21 6 V12 C21 17.5 17.2 21 12 22.5 C6.8 21 3 17.5 3 12 V6 Z"
-              fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-        <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
-        <path d="M12 12 L16.2 8.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-      </svg>
-      <div class="brand-text">
-        <span class="brand-name">sentryd</span>
-        <span class="brand-sub">network triage console</span>
-      </div>
-    </div>
-    <nav class="tabs" aria-label="Views">
-      <a href="#/" data-tab="dashboard">Dashboard</a>
-      <a href="#/cases" data-tab="cases">Cases</a>
-      <a href="#/settings" data-tab="settings">Settings</a>
-    </nav>
-    <div class="appbar-actions">
-      <span id="updated" class="updated" aria-live="polite"></span>
-      <label class="toggle">
-        <input type="checkbox" id="auto-refresh" checked>
-        <span>Live</span>
-      </label>
-      <button id="theme-toggle" class="icon-btn" aria-label="Toggle color theme" title="Toggle theme">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path d="M12 3 a9 9 0 1 0 0 18 a9 9 0 0 0 0 -18 Z M12 5 v14 a7 7 0 0 0 0 -14 Z" fill="currentColor"/>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+      <symbol id="i-cases" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5Z"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V8M10 12h4"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7M9 7V4.5A.5.5 0 0 1 9.5 4h5a.5.5 0 0 1 .5.5V7"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M10 3.5 11.6 8a2 2 0 0 0 1.3 1.3L17.5 11l-4.6 1.6a2 2 0 0 0-1.3 1.3L10 18.5l-1.6-4.6a2 2 0 0 0-1.3-1.3L2.5 11l4.6-1.6A2 2 0 0 0 8.4 8Z"/><path d="M18.5 3v4M16.5 5h4"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 4.2 2.8 17.5A2 2 0 0 0 4.5 20.5h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4M12 17h.01"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+      <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V19l-4-2v-4.5Z"/></symbol>
+      <symbol id="i-host" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+      <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6.5c5 0 6 5.5 10 5.5M7 17.5c5 0 6-5.5 10-5.5"/></symbol>
+      <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l5 5v11.5A1.5 1.5 0 0 1 17.5 21h-11A1.5 1.5 0 0 1 5 19.5v-15A1.5 1.5 0 0 1 6.5 3Z"/><path d="M14 3v5h5"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5 20.5 6v6c0 5-3.6 8.4-8.5 9.8C7.1 20.4 3.5 17 3.5 12V6Z"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="shell" id="shell">
+    <aside class="sidebar" aria-label="Primary">
+      <a class="brand" href="#/" aria-label="sentryd home">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="currentColor" stop-opacity="0"/>
+              <stop offset="1" stop-color="currentColor" stop-opacity=".55"/>
+            </linearGradient>
+            <clipPath id="shield-clip"><path d="M16 3 27 7.5v8c0 7-4.8 11.6-11 13.5C9.8 27.1 5 22.5 5 15.5v-8Z"/></clipPath>
+          </defs>
+          <path class="brand-shield" d="M16 3 27 7.5v8c0 7-4.8 11.6-11 13.5C9.8 27.1 5 22.5 5 15.5v-8Z"/>
+          <g clip-path="url(#shield-clip)">
+            <circle class="brand-ring" cx="16" cy="16" r="5.5"/>
+            <g class="brand-sweep"><path d="M16 16 L16 2 A14 14 0 0 1 28.1 9 Z" fill="url(#sweep)"/></g>
+          </g>
+          <circle cx="16" cy="16" r="2.2" fill="currentColor"/>
         </svg>
+        <span class="brand-text">
+          <span class="brand-name">sentryd</span>
+          <span class="brand-sub">network triage</span>
+        </span>
+      </a>
+
+      <nav class="nav" aria-label="Views">
+        <a href="#/" data-tab="dashboard"><svg class="ic"><use href="#i-dashboard"/></svg><span>Overview</span><span class="nav-count" id="nav-open" hidden></span></a>
+        <a href="#/cases" data-tab="cases"><svg class="ic"><use href="#i-cases"/></svg><span>Cases</span><span class="nav-count" id="nav-cases" hidden></span></a>
+        <a href="#/settings" data-tab="settings"><svg class="ic"><use href="#i-settings"/></svg><span>Settings</span></a>
+      </nav>
+
+      <button class="search-trigger" id="open-palette" type="button">
+        <svg class="ic"><use href="#i-search"/></svg>
+        <span>Search or jump to</span>
+        <kbd class="kbd-hint" id="palette-kbd">Ctrl K</kbd>
       </button>
-    </div>
-  </header>
 
-  <main>
-    <!-- ============ dashboard ============ -->
-    <section id="view-dashboard" hidden>
-      <div class="view-head">
-        <h1 class="view-title">Alert dashboard</h1>
-        <select id="case-filter" aria-label="Scope to case"><option value="">All cases</option></select>
+      <div class="sidebar-foot">
+        <div class="live-row">
+          <label class="switch" title="Live updates (L)">
+            <input type="checkbox" role="switch" id="live-toggle" checked>
+            <span class="switch-track"><span class="switch-knob"></span></span>
+            <span class="switch-label">Live</span>
+          </label>
+          <span class="live-status" id="live-status" aria-live="polite"><span class="pulse"></span><span class="live-text">connecting</span></span>
+        </div>
+        <div class="foot-row">
+          <button class="icon-btn" id="theme-cycle" type="button" aria-label="Change theme (T)" title="Theme: system (T)">
+            <svg class="ic"><use href="#i-monitor"/></svg>
+          </button>
+          <button class="icon-btn" id="open-help" type="button" aria-label="Keyboard shortcuts (?)" title="Keyboard shortcuts (?)">
+            <svg class="ic"><use href="#i-keyboard"/></svg>
+          </button>
+          <span class="foot-meta" id="foot-meta"></span>
+        </div>
       </div>
+    </aside>
 
-      <section class="kpis" aria-label="Summary">
-        <div class="tile"><span class="tile-label">Total alerts</span><span class="tile-value" id="kpi-total">-</span><span class="tile-hint" id="kpi-total-hint"></span></div>
-        <div class="tile"><span class="tile-label">High &amp; critical</span><span class="tile-value" id="kpi-severe">-</span><span class="tile-hint" id="kpi-severe-hint"></span></div>
-        <div class="tile"><span class="tile-label">Sources observed</span><span class="tile-value" id="kpi-sources">-</span><span class="tile-hint">distinct offending hosts</span></div>
-        <div class="tile"><span class="tile-label">AI triaged</span><span class="tile-value" id="kpi-triaged">-</span><span class="tile-hint" id="kpi-triaged-hint"></span></div>
-      </section>
-
-      <section class="charts">
-        <div class="card chart-card">
-          <div class="card-head"><h2>Alert activity</h2><span class="card-note">event time</span></div>
-          <div id="timeline" class="timeline" role="img" aria-label="Alert counts over time"></div>
-          <div id="timeline-axis" class="timeline-axis"></div>
-        </div>
-        <div class="card chart-card">
-          <div class="card-head"><h2>Alerts by rule</h2></div>
-          <div id="by-rule" class="rule-bars"></div>
-        </div>
-      </section>
-
-      <section class="charts">
-        <div class="card chart-card">
-          <div class="card-head"><h2>Top suspicious hosts</h2><span class="card-note">by involvement</span></div>
-          <div id="top-hosts" class="rank-list"></div>
-        </div>
-        <div class="card chart-card">
-          <div class="card-head"><h2>Top ports and services</h2></div>
-          <div id="top-ports" class="rank-list"></div>
-        </div>
-      </section>
-
-      <section class="card table-card">
-        <div class="card-head table-head">
-          <h2>Alerts</h2>
-          <div class="filters">
-            <input type="search" id="filter-search" placeholder="Filter by host or title" aria-label="Search alerts">
-            <select id="filter-severity" aria-label="Filter by severity">
-              <option value="">All severities</option>
-              <option value="critical">Critical</option><option value="high">High</option>
-              <option value="medium">Medium</option><option value="low">Low</option>
-            </select>
-            <select id="filter-rule" aria-label="Filter by rule"><option value="">All rules</option></select>
-            <select id="filter-status" aria-label="Filter by status">
-              <option value="">Any status</option>
-              <option value="new">New</option><option value="triaged">Triaged</option>
-              <option value="dismissed">Dismissed</option>
-            </select>
-            <a class="btn ghost" id="export-alerts-csv" href="/api/export/alerts?format=csv" download>Export CSV</a>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table id="alert-table">
-            <thead><tr>
-              <th class="num">ID</th><th>Time (UTC)</th><th>Severity</th><th>Rule</th>
-              <th>Source</th><th>Target</th><th class="num">Count</th><th>Title</th><th>AI</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div id="empty" class="empty" hidden>
-          <p>No alerts match the current filters.</p>
-          <p class="empty-hint">Upload a capture on the <a href="#/cases">Cases</a> page or run
-            <code>sentryd replay tests/fixtures/portscan.pcap</code></p>
-        </div>
-      </section>
-    </section>
-
-    <!-- ============ cases ============ -->
-    <section id="view-cases" hidden>
-      <div class="view-head"><h1 class="view-title">Cases</h1></div>
-
-      <section class="card upload-card">
-        <div class="card-head"><h2>Analyze a capture</h2><span class="card-note">.pcap / .pcapng, up to 200 MB</span></div>
-        <div class="upload-body">
-          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload a capture file">
-            <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
-              <path d="M12 16 V4 M7 9 L12 4 L17 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M4 15 v4 a1 1 0 0 0 1 1 h14 a1 1 0 0 0 1 -1 v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-            </svg>
-            <p><strong>Drop a capture here</strong> or click to choose a file</p>
-            <p class="dropzone-hint">A new case is created and replayed automatically</p>
-            <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
-          </div>
-          <div id="upload-status" class="upload-status" hidden></div>
-          <details class="server-path">
-            <summary>Advanced: replay a server-side path</summary>
-            <div class="server-path-row">
-              <input type="text" id="server-path" placeholder="/path/on/server/capture.pcap" aria-label="Server-side pcap path">
-              <button class="btn" id="server-path-go">Replay</button>
+    <div class="main">
+      <main class="content" id="content">
+        <!-- ============ dashboard ============ -->
+        <section id="view-dashboard" class="view" hidden>
+          <header class="view-head">
+            <div class="view-titles">
+              <p class="eyebrow">Workspace</p>
+              <h1 class="view-title">Overview</h1>
             </div>
-          </details>
-        </div>
-      </section>
+            <div class="view-actions">
+              <label class="select-wrap" title="Scope every panel to one case">
+                <span class="select-label">Scope</span>
+                <select id="case-filter" aria-label="Scope to case"><option value="">All cases</option></select>
+              </label>
+              <button class="btn ghost" id="export-alerts-csv" type="button"><svg class="ic"><use href="#i-download"/></svg>Export CSV</button>
+            </div>
+          </header>
 
-      <section class="card table-card">
-        <div class="card-head table-head"><h2>All cases</h2>
-          <label class="toggle"><input type="checkbox" id="show-archived"> <span>Show archived</span></label>
-        </div>
-        <div class="table-wrap">
-          <table id="case-table">
-            <thead><tr>
-              <th class="num">ID</th><th>Name</th><th>Source</th><th>Status</th>
-              <th class="num">Events</th><th class="num">Alerts</th><th>Created (UTC)</th><th>AI</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div id="cases-empty" class="empty" hidden>
-          <p>No cases yet.</p>
-          <p class="empty-hint">Upload a capture above to create your first case.</p>
-        </div>
-      </section>
-    </section>
+          <section class="kpis" aria-label="Summary">
+            <article class="tile" id="kpi-total"><div class="tile-top"><span class="tile-label">Alerts</span></div><span class="tile-value">0</span><span class="tile-hint"></span><svg class="spark" aria-hidden="true"></svg></article>
+            <article class="tile" id="kpi-open"><div class="tile-top"><span class="tile-label">Needs review</span></div><span class="tile-value">0</span><span class="tile-hint"></span><div class="meter" aria-hidden="true"><span class="meter-fill"></span></div></article>
+            <article class="tile" id="kpi-severe"><div class="tile-top"><span class="swatch severe"></span><span class="tile-label">High &amp; critical</span></div><span class="tile-value">0</span><span class="tile-hint"></span><svg class="spark" aria-hidden="true"></svg></article>
+            <article class="tile" id="kpi-sources"><div class="tile-top"><span class="tile-label">Offending hosts</span></div><span class="tile-value">0</span><span class="tile-hint">distinct alert sources</span><div class="host-dots" aria-hidden="true"></div></article>
+          </section>
 
-    <!-- ============ settings ============ -->
-    <section id="view-settings" hidden>
-      <div class="view-head"><h1 class="view-title">Settings</h1></div>
-      <section class="card">
-        <div class="card-head"><h2>Instance</h2></div>
-        <dl id="settings-instance" class="meta-grid settings-grid"></dl>
-      </section>
-      <section class="card">
-        <div class="card-head"><h2>Detection rules</h2>
-          <span class="card-note">toggles apply to future runs, not stored alerts</span>
-        </div>
-        <div id="settings-rules" class="settings-rules"></div>
-      </section>
-      <section class="card">
-        <div class="card-head"><h2>Appearance</h2></div>
-        <div class="settings-appearance">
-          <button class="btn ghost" id="settings-theme">Toggle light / dark theme</button>
-        </div>
-      </section>
-    </section>
+          <section class="grid-2">
+            <article class="card chart-card">
+              <header class="card-head">
+                <div><h2>Alert activity</h2><p class="card-sub">event time &middot; click a bar to filter, shift-click to extend</p></div>
+                <div class="legend" aria-label="Legend"><span class="legend-item"><span class="swatch severe"></span>High &amp; critical</span><span class="legend-item"><span class="swatch other"></span>Low &amp; medium</span></div>
+              </header>
+              <div class="columns-chart" id="timeline" role="group" aria-label="Alert counts over event time"></div>
+            </article>
+            <article class="card chart-card">
+              <header class="card-head"><div><h2>Alerts by rule</h2><p class="card-sub">click a rule to filter</p></div></header>
+              <div id="by-rule" class="bars"></div>
+            </article>
+          </section>
 
-    <!-- ============ case detail ============ -->
-    <section id="view-case" hidden>
-      <div class="view-head">
-        <a class="btn ghost back" href="#/cases">&larr; Cases</a>
-        <h1 class="view-title" id="case-title">Case</h1>
-        <span id="case-status-chip"></span>
-      </div>
-      <div id="case-body"></div>
-    </section>
-  </main>
+          <section class="grid-2 even">
+            <article class="card chart-card">
+              <header class="card-head"><div><h2>Top suspicious hosts</h2><p class="card-sub">weighted by severity; sources count more than targets</p></div></header>
+              <div id="top-hosts" class="bars"></div>
+            </article>
+            <article class="card chart-card">
+              <header class="card-head"><div><h2>Ports and services</h2><p class="card-sub">destination ports named in alerts</p></div></header>
+              <div id="top-ports" class="bars"></div>
+            </article>
+          </section>
 
-  <div id="scrim" class="scrim" hidden></div>
-  <aside id="drawer" class="drawer" hidden aria-label="Detail">
-    <div class="drawer-head">
-      <div id="drawer-title"></div>
-      <button id="drawer-close" class="icon-btn" aria-label="Close detail">&#10005;</button>
+          <section class="card table-card" id="alerts-card">
+            <header class="card-head table-head">
+              <div><h2>Alerts</h2><p class="card-sub" id="alert-count"></p></div>
+              <div class="toolbar">
+                <label class="search-box">
+                  <svg class="ic"><use href="#i-search"/></svg>
+                  <input type="search" id="filter-search" placeholder="Filter by host, rule or title" aria-label="Search alerts" autocomplete="off">
+                  <kbd>/</kbd>
+                </label>
+                <div class="segmented" id="filter-severity" role="radiogroup" aria-label="Severity">
+                  <span class="seg-indicator"></span>
+                  <button type="button" role="radio" data-value="" aria-checked="true">All</button>
+                  <button type="button" role="radio" data-value="critical" aria-checked="false"><span class="dot critical"></span>Critical</button>
+                  <button type="button" role="radio" data-value="high" aria-checked="false"><span class="dot high"></span>High</button>
+                  <button type="button" role="radio" data-value="medium" aria-checked="false"><span class="dot medium"></span>Medium</button>
+                  <button type="button" role="radio" data-value="low" aria-checked="false"><span class="dot low"></span>Low</button>
+                </div>
+                <select id="filter-rule" aria-label="Filter by rule"><option value="">All rules</option></select>
+                <select id="filter-status" aria-label="Filter by verdict">
+                  <option value="">Any verdict</option>
+                  <option value="new">Needs review</option><option value="confirmed">Confirmed</option>
+                  <option value="false_positive">False positive</option><option value="expected">Expected</option>
+                  <option value="ignored">Ignored</option><option value="dismissed">Dismissed</option>
+                </select>
+              </div>
+              <div class="chips" id="filter-chips"></div>
+            </header>
+            <div class="alert-table" id="alert-table"></div>
+          </section>
+        </section>
+
+        <!-- ============ cases ============ -->
+        <section id="view-cases" class="view" hidden>
+          <header class="view-head">
+            <div class="view-titles"><p class="eyebrow">Investigations</p><h1 class="view-title">Cases</h1></div>
+          </header>
+
+          <section class="card upload-card">
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload a capture file" aria-describedby="drop-hint">
+              <div class="drop-art" aria-hidden="true">
+                <span class="drop-ring"></span><span class="drop-ring r2"></span>
+                <svg class="ic drop-icon"><use href="#i-upload"/></svg>
+              </div>
+              <div class="drop-copy">
+                <p class="drop-title"><strong>Drop a capture to analyze</strong> or click to browse</p>
+                <p class="drop-hint" id="drop-hint">.pcap, .pcapng or .cap up to 200 MB &middot; a new case is created and replayed through every enabled rule</p>
+              </div>
+              <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+            </div>
+            <div id="upload-status" class="upload-status" hidden></div>
+            <details class="server-path">
+              <summary><svg class="ic"><use href="#i-chevron-right"/></svg>Replay a file already on the server</summary>
+              <form class="server-path-row" id="server-path-form">
+                <input type="text" id="server-path" placeholder="/path/on/server/capture.pcap" aria-label="Server-side pcap path" autocomplete="off">
+                <button class="btn" type="submit">Replay</button>
+              </form>
+            </details>
+          </section>
+
+          <section class="card table-card">
+            <header class="card-head table-head">
+              <div><h2>All cases</h2><p class="card-sub" id="case-count"></p></div>
+              <label class="switch">
+                <input type="checkbox" role="switch" id="show-archived">
+                <span class="switch-track"><span class="switch-knob"></span></span>
+                <span class="switch-label">Show archived</span>
+              </label>
+            </header>
+            <div id="case-list"></div>
+          </section>
+        </section>
+
+        <!-- ============ case detail ============ -->
+        <section id="view-case" class="view" hidden>
+          <header class="view-head">
+            <div class="view-titles">
+              <nav class="crumbs" aria-label="Breadcrumb"><a href="#/cases">Cases</a><svg class="ic"><use href="#i-chevron-right"/></svg><span id="case-crumb">Case</span></nav>
+              <h1 class="view-title"><span id="case-title">Case</span> <span id="case-status-chip"></span></h1>
+            </div>
+            <div class="view-actions" id="case-actions"></div>
+          </header>
+          <div id="case-body" class="case-body"></div>
+        </section>
+
+        <!-- ============ settings ============ -->
+        <section id="view-settings" class="view" hidden>
+          <header class="view-head">
+            <div class="view-titles"><p class="eyebrow">Preferences</p><h1 class="view-title">Settings</h1></div>
+          </header>
+          <div class="settings-grid">
+            <section class="card">
+              <header class="card-head"><div><h2>Appearance</h2><p class="card-sub">stored in this browser</p></div></header>
+              <div class="settings-list">
+                <div class="setting"><div><p class="setting-name">Theme</p><p class="setting-desc">Follow the system, or pin light or dark.</p></div>
+                  <div class="segmented" id="pref-theme" role="radiogroup" aria-label="Theme">
+                    <span class="seg-indicator"></span>
+                    <button type="button" role="radio" data-value="system"><svg class="ic"><use href="#i-monitor"/></svg>System</button>
+                    <button type="button" role="radio" data-value="light"><svg class="ic"><use href="#i-sun"/></svg>Light</button>
+                    <button type="button" role="radio" data-value="dark"><svg class="ic"><use href="#i-moon"/></svg>Dark</button>
+                  </div>
+                </div>
+                <div class="setting"><div><p class="setting-name">Density</p><p class="setting-desc">Compact rows fit more alerts on screen.</p></div>
+                  <div class="segmented" id="pref-density" role="radiogroup" aria-label="Density">
+                    <span class="seg-indicator"></span>
+                    <button type="button" role="radio" data-value="comfortable">Comfortable</button>
+                    <button type="button" role="radio" data-value="compact">Compact</button>
+                  </div>
+                </div>
+                <div class="setting"><div><p class="setting-name">Reduce motion</p><p class="setting-desc">Turns off transitions and count-up animations. Your system setting is always respected.</p></div>
+                  <label class="switch"><input type="checkbox" role="switch" id="pref-motion"><span class="switch-track"><span class="switch-knob"></span></span></label>
+                </div>
+                <div class="setting"><div><p class="setting-name">Live updates</p><p class="setting-desc">Checks a one-number change counter every few seconds and refreshes only when something changed. Paused while the tab is hidden.</p></div>
+                  <label class="switch"><input type="checkbox" role="switch" id="pref-live"><span class="switch-track"><span class="switch-knob"></span></span></label>
+                </div>
+              </div>
+            </section>
+            <section class="card">
+              <header class="card-head"><div><h2>Instance</h2><p class="card-sub" id="instance-sub"></p></div></header>
+              <dl id="settings-instance" class="facts"></dl>
+              <div id="settings-access"></div>
+            </section>
+            <section class="card span-2">
+              <header class="card-head"><div><h2>Detection rules</h2><p class="card-sub">toggles apply to future runs, not to stored alerts &middot; thresholds live in config/signatures.yaml</p></div></header>
+              <div id="settings-rules" class="rule-grid"></div>
+            </section>
+          </div>
+        </section>
+      </main>
     </div>
+  </div>
+
+  <!-- overlays -->
+  <div id="scrim" class="scrim"></div>
+  <aside id="drawer" class="drawer" aria-label="Detail" aria-hidden="true" inert>
+    <header class="drawer-head">
+      <div id="drawer-title" class="drawer-title"></div>
+      <div class="drawer-nav">
+        <button class="icon-btn" id="drawer-prev" type="button" aria-label="Previous alert (K)" title="Previous (K)"><svg class="ic"><use href="#i-chevron-left"/></svg></button>
+        <button class="icon-btn" id="drawer-next" type="button" aria-label="Next alert (J)" title="Next (J)"><svg class="ic"><use href="#i-chevron-right"/></svg></button>
+        <button class="icon-btn" id="drawer-close" type="button" aria-label="Close detail (Esc)" title="Close (Esc)"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+    </header>
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
 
-  <div id="tooltip" class="tooltip" hidden></div>
-  <div id="toast" class="toast" hidden></div>
-
-  <script src="app.js"></script>
+  <div id="modal-root"></div>
+  <div id="tooltip" class="tooltip" role="tooltip"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="bulk-bar" class="bulk-bar" aria-live="polite" inert></div>
 </body>
 </html>

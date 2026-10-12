@@ -1,7 +1,12 @@
 from conftest import make_event  # noqa: F401 (fixture import side effects)
 
-from sentryd.core.alerts import Alert, Severity
-from sentryd.core.correlate import correlate, investigation_hint, related_alerts
+from sentryd.core.alerts import Alert, AlertStatus, Severity
+from sentryd.core.correlate import (
+    case_risk,
+    correlate,
+    investigation_hint,
+    related_alerts,
+)
 from sentryd.storage.store import AlertStore
 
 
@@ -82,5 +87,85 @@ def test_investigation_hints_are_specific():
     assert "--case 3" in hint
     assert "tshark" in hint
 
-    for rule in ("port_scan", "traffic_spike", "arp_spoof", "signature"):
+    for rule in ("port_scan", "traffic_spike", "arp_spoof", "signature", "beacon"):
         assert investigation_hint(alert(rule_id=rule))  # every rule has one
+
+
+# -- kill-chain phases -----------------------------------------------------------
+
+
+def scan_with_probe_and_followup():
+    scan = alert(
+        id=2, ts=101.7, rule_id="port_scan", dst="10.0.0.9",
+        evidence={"sample_ports": [21, 22, 23, 25], "sample_hosts": ["10.0.0.9"],
+                  "window_seconds": 10.0},
+    )
+    telnet_probe = alert(id=1, ts=100.2, rule_id="suspicious_port", severity=Severity.MEDIUM,
+                         dst_port=23, confidence=0.6)
+    handler = alert(id=3, ts=110.0, rule_id="suspicious_port", dst_port=4444, confidence=0.6)
+    return [telnet_probe, scan, handler]
+
+
+def test_probe_hit_inside_a_scan_counts_as_reconnaissance():
+    cluster = correlate(scan_with_probe_and_followup())[0]
+
+    # Without absorption this would read "suspicious service access ->
+    # reconnaissance -> ..." because the Telnet probe precedes the scan alert.
+    assert cluster.chain == "reconnaissance -> suspicious service access"
+    recon, access = cluster.phases
+    assert recon["alert_ids"] == [1, 2]
+    assert recon["first_seen"] == 100.2
+    assert access["alert_ids"] == [3]
+    assert cluster.rules == ["suspicious_port", "port_scan"]  # raw first-seen order kept
+
+
+def test_hit_on_a_port_the_scan_never_sampled_is_not_absorbed():
+    alerts = scan_with_probe_and_followup()
+    alerts[0].dst_port = 31337  # not in the scan's sample
+    cluster = correlate(alerts)[0]
+    assert cluster.chain == "suspicious service access -> reconnaissance"
+
+
+def test_simultaneous_phases_follow_kill_chain_order():
+    alerts = [
+        alert(ts=100.0, rule_id="traffic_spike", dst=None),
+        alert(ts=100.0, rule_id="port_scan"),
+    ]
+    assert correlate(alerts)[0].chain == "reconnaissance -> unusual data volume"
+
+
+# -- risk score --------------------------------------------------------------------
+
+
+def test_risk_score_is_explained_by_its_factors():
+    risk = correlate(scan_with_probe_and_followup())[0].risk
+
+    assert risk["score"] == sum(f["points"] for f in risk["factors"])
+    names = [f["factor"] for f in risk["factors"]]
+    assert names[0] == "peak severity high"
+    assert "multi-stage activity (2 phases)" in names
+    assert risk["level"] == "high"
+
+
+def test_analyst_verdicts_move_the_score():
+    alerts = scan_with_probe_and_followup()
+    baseline = correlate(alerts)[0].risk["score"]
+
+    alerts[2].status = AlertStatus.CONFIRMED
+    assert correlate(alerts)[0].risk["score"] > baseline
+
+    for a in alerts:
+        a.status = AlertStatus.FALSE_POSITIVE
+    closed = correlate(alerts)[0].risk
+    assert (closed["score"], closed["level"]) == (0, "none")
+
+
+def test_case_risk_takes_the_riskiest_cluster():
+    clusters = correlate([
+        alert(src="10.0.0.1", severity=Severity.LOW, confidence=0.5),
+        alert(src="10.0.0.2", severity=Severity.HIGH, confidence=0.9),
+    ])
+    risk = case_risk(clusters)
+    assert risk["source"] == "10.0.0.2"
+    assert risk["score"] == 60 + 9
+    assert case_risk([]) == {"score": 0, "level": "none", "source": None, "factors": []}

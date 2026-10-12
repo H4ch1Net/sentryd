@@ -1,57 +1,59 @@
 # sentryd
 
 A small network anomaly detector. Detection is rule-based and runs fully
-offline. An optional AI layer writes up explanations for alerts after they
-fire.
+offline. An optional AI layer writes up explanations after alerts fire.
 
-The AI never decides what gets detected. The whole tool works without an API
-key.
+The AI never decides what gets detected, and the whole tool works without an
+API key.
 
 Built with Python 3.11+, scapy, FastAPI, SQLite, Typer, and Textual.
 
-![sentryd dashboard](docs/img/dashboard.png)
+![sentryd dashboard](docs/img/dashboard-dark.png)
 
 ## What it detects
 
 | rule | what it catches |
 |---|---|
-| `port_scan` | vertical scans and horizontal sweeps |
-| `traffic_spike` | floods and exfil-style bursts against a per-host baseline |
-| `arp_spoof` | IP-to-MAC conflicts and gratuitous ARP floods |
-| `suspicious_port` | traffic to known-bad ports, from a configurable watchlist |
-| `signature` | anything stateless you can describe in YAML |
+| `port_scan` | SYN, FIN, and XMAS scans, and horizontal sweeps |
+| `beacon` | command-and-control check-ins on a steady rhythm |
+| `traffic_spike` | floods and exfil-style bursts |
+| `arp_spoof` | ARP cache poisoning and MITM setups |
+| `suspicious_port` | traffic to known-bad ports |
+| `signature` | anything you can describe in YAML |
 
-Each alert includes a severity, a confidence score, and the raw evidence
-behind it (ports, MACs, byte counts), so you can check the finding yourself.
-
-Thresholds and watchlists live in [`config/signatures.yaml`](config/signatures.yaml).
+Every alert has a severity, a confidence score, and the evidence behind it
+(ports, MACs, byte counts), so you can check the finding yourself. Thresholds
+and watchlists live in [`config/signatures.yaml`](config/signatures.yaml).
 
 ## How it works
 
-Packet replay, live capture, and log tailing all produce the same `Event`
-records. Rules never touch packets, so a rule behaves the same on a file and on
-a live interface, and the tests run the same code path as live capture.
+Pcap replay, live capture, and log tailing all produce the same `Event`
+records. Rules never touch packets, so a rule behaves the same on a file and
+on a live interface.
 
-Windows, baselines, and dedup cooldowns all run on packet timestamps, so a
-replay behaves like the original capture.
+Windows, baselines, and dedup cooldowns run on packet timestamps, so a replay
+behaves like the original capture.
 
 Repeat hits from the same rule, source, and destination merge into one alert
-within a cooldown. A rule that can raise several distinct findings for the same
-host pair sets its own key, so those never merge.
+within a cooldown. A rule that can raise several distinct findings for one
+host pair sets its own key so those never merge.
 
-`port_scan` counts SYN-only attempts in a sliding window and tracks the distinct
-host/port targets each source reaches. `traffic_spike` keeps an EWMA baseline
-per host and time bucket and fires on a ratio over that baseline, with an
-absolute floor. `arp_spoof` tracks which MAC each IP has claimed and flags
-conflicts.
+`port_scan` counts probe segments in a sliding window and tracks the distinct
+host/port targets each source reaches. `beacon` looks at the spacing between
+a flow's contacts and fires once a steady rhythm is established. `traffic_spike`
+compares each host against an EWMA baseline. `arp_spoof` tracks which MAC each
+IP has claimed.
+
+Alerts from one source are grouped into a cluster, with its phases listed in
+kill-chain order. Each cluster and case gets a 0-100 risk score built from
+named factors. This is all deterministic. No AI is involved.
 
 Alerts and cases live in SQLite through the standard library, with no ORM.
-Schema changes migrate in place, so older databases keep working.
 
-The AI layer runs only when you ask it to. It gets a size-capped summary of
-alert metadata, never packets.
+The AI layer runs only when you ask it to, and it gets a size-capped summary
+of alert metadata, never packets.
 
-## Setup
+## Quick start
 
 You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
@@ -59,6 +61,8 @@ You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 git clone https://github.com/H4ch1Net/sentryd && cd sentryd
 uv sync
 uv run pytest
+make demo     # replay the bundled capture into a case
+make web      # console on http://127.0.0.1:8000
 ```
 
 Or with Docker:
@@ -67,13 +71,15 @@ Or with Docker:
 docker compose up --build     # http://localhost:8000
 ```
 
+Data (the SQLite database and uploaded pcaps) lives in a named volume.
+
 To turn on AI explanations, copy `.env.example` to `.env` and set
-`OPENROUTER_API_KEY`. Set `SENTRYD_API_TOKEN` if you expose the web port.
+`OPENROUTER_API_KEY`.
 
-## Quick demo
+## Demo
 
-Replay the bundled synthetic capture. It has a port scan and a connection to
-a suspicious port mixed into normal background traffic:
+The bundled capture is synthetic. It has a port scan and a connection to a
+suspicious port hidden in ordinary background traffic.
 
 ```bash
 uv run sentryd replay tests/fixtures/portscan.pcap
@@ -81,23 +87,17 @@ uv run sentryd cases show 1
 uv run sentryd alerts show 2
 ```
 
-Or watch a replay in the terminal dashboard:
+To watch a replay in the terminal dashboard:
 
 ```bash
 uv run sentryd dash --pcap tests/fixtures/arpspoof.pcap --speed 4
 ```
 
-Or open the web console:
-
-```bash
-uv run sentryd web            # http://127.0.0.1:8000
-```
-
 ## Cases
 
-Every replay or capture becomes a case. Alerts are tied to the case that
-produced them, so runs don't get mixed together. A case keeps its source,
-event count, time span, notes, and AI report if you generated one.
+Every replay or capture becomes a case, so runs don't get mixed together. A
+case keeps its source, hashes, event count, time span, notes, risk score, and
+AI report if you generated one. Cases can be archived or cleared.
 
 ## Input sources
 
@@ -107,8 +107,17 @@ sudo uv run sentryd sniff -i eth0         # live capture (needs root)
 uv run sentryd tail traffic.log           # JSON-lines log
 ```
 
-All three sources feed the same event stream, so rules behave the same
-whichever one you use.
+The log format is one JSON object per line with `ts`, `protocol`, `src_ip`,
+`dst_ip`, `src_port`, `dst_port`, `tcp_flags`, and `length`. Lines that don't
+parse are skipped and counted.
+
+## Working a case
+
+Each alert shows what fired and why, with the actual numbers, plus the
+evidence to verify it and a suggested next command. Mark each alert as
+confirmed, false positive, expected, ignored, or dismissed, from the web
+drawer or with `sentryd alerts status <id> <verdict>`. Verdicts work without
+an AI provider.
 
 ## AI review
 
@@ -117,10 +126,12 @@ Per-alert explanations and a whole-case review are both optional:
 ```bash
 uv run sentryd triage 2               # explain one alert
 uv run sentryd triage latest          # review the newest case
+uv run sentryd triage --case 1 --json # machine-readable
 ```
 
-Only a short summary of alert metadata is sent to the model, never raw
-packets, and only when you run one of these commands.
+The review covers the attack chain, suspicious hosts and ports, a timeline,
+what to investigate next, and likely false positives. It is built from the
+size-capped digest only. Without a key, detection and evidence are unchanged.
 
 ## Exports
 
@@ -130,16 +141,32 @@ uv run sentryd export case 1 --format md -o report.md
 uv run sentryd export case 1 --format json
 ```
 
+The markdown report is useful on its own. If an AI review exists, it gets
+appended as a separate section.
+
 ## Rules
 
 ```bash
 uv run sentryd rules list
 uv run sentryd rules explain suspicious_port
 uv run sentryd rules lint
-uv run sentryd rules test --rule port_scan --pcap cap.pcap
+uv run sentryd rules test --rule port_scan --pcap cap.pcap   # nothing stored
 ```
 
-`rules test` runs a rule against a capture without storing anything.
+## Web console
+
+`sentryd web` serves a single-page console with no build step. You can upload
+captures, browse cases, drill into alerts, edit notes, export, and run reviews.
+Settings cover theme, density, and rule on/off switches.
+
+The keyboard works too. Ctrl+K opens a command palette. J and K move through
+alerts, 1 to 5 set a verdict, X selects rows for a bulk verdict, and ? lists
+the rest. Every verdict change has an undo.
+
+The console polls a single change counter and refreshes only when something
+changed, so an idle console costs almost nothing.
+
+![attack graph](docs/img/attack-graph.png)
 
 ## Configuration
 
@@ -162,26 +189,23 @@ signatures:
       tcp_flags_not: A
 ```
 
-## Web API
+## HTTP API
 
-The web console is a single page with a REST API behind it. Interactive docs
-are at `/docs`.
+The web console sits on a REST API. Interactive docs are at `/docs`.
 
 The API listens on `127.0.0.1` by default. Set `SENTRYD_API_TOKEN` to require
 a bearer token, and `SENTRYD_PCAP_DIR` to allow server-side replay from a
-directory. Put TLS or a reverse proxy in front before exposing it publicly.
+directory. Put TLS or a reverse proxy in front before exposing it.
 
 ## For contributors
 
 The package lives in `src/sentryd/`. Architecture notes and conventions are in
 [AGENTS.md](AGENTS.md).
 
-## Testing
-
 ```bash
 uv run pytest
 ```
 
 The tests run offline. Rules are tested against hand-built events and
-synthetic pcaps, including traffic that should not fire. The demo captures
-are generated by `uv run python tests/fixtures/generate.py`.
+synthetic pcaps, including traffic that should not fire. Regenerate the demo
+captures with `uv run python tests/fixtures/generate.py`.

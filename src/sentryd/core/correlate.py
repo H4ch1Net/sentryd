@@ -1,9 +1,21 @@
 """Alert correlation: turn isolated alerts into readable activity clusters.
 
 Deterministic, no AI. Alerts sharing an offending source IP within a case
-form a cluster; the cluster's chain is the sequence of rules in first-seen
-order, labeled with the analyst-facing phase each rule represents. Used by
-the CLI case view, the web case page, and the AI review digest.
+form a cluster; the cluster's chain is its sequence of attack phases in
+first-seen order, labeled with the analyst-facing phase each rule represents.
+Used by the CLI case view, the web case page, and the AI review digest.
+
+Two refinements keep the chain honest:
+
+- A watchlisted-port or signature hit that is one of a port scan's own
+  probes (same source, a port the scan sampled, inside the scan's window) is
+  reconnaissance, not "service access": scanners routinely touch Telnet on
+  their way through the port list.
+- Phases that start at the same moment are ordered by kill-chain stage.
+
+Each cluster also gets a 0-100 risk score built from named, additive
+factors (peak severity, evidence strength, multi-phase escalation, analyst
+verdicts) so prioritization is explainable line by line.
 """
 
 from __future__ import annotations
@@ -11,16 +23,55 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from sentryd.core.alerts import Alert
+from sentryd.core.alerts import Alert, AlertStatus
 
-# What each rule firing means in attack-chain terms.
+# What each rule firing means in attack-chain terms, in kill-chain order
+# (the order breaks ties between phases that begin simultaneously).
 RULE_PHASE = {
     "port_scan": "reconnaissance",
-    "suspicious_port": "suspicious service access",
-    "traffic_spike": "unusual data volume",
     "arp_spoof": "man-in-the-middle positioning",
+    "suspicious_port": "suspicious service access",
     "signature": "policy/signature match",
+    "beacon": "command-and-control",
+    "traffic_spike": "unusual data volume",
 }
+_PHASE_STAGE = {phase: i for i, phase in enumerate(RULE_PHASE.values())}
+
+# Rules whose hits can be individual probes of a port scan.
+_PROBE_RULES = ("suspicious_port", "signature")
+
+# Verdicts meaning "an analyst looked and this is not a threat".
+_BENIGN_VERDICTS = {
+    AlertStatus.FALSE_POSITIVE,
+    AlertStatus.EXPECTED,
+    AlertStatus.IGNORED,
+    AlertStatus.DISMISSED,
+}
+
+_SEVERITY_POINTS = {"low": 15, "medium": 35, "high": 60, "critical": 80}
+# Score bands, highest first.
+_RISK_LEVELS = ((85, "critical"), (60, "high"), (35, "medium"), (1, "low"))
+
+
+def risk_level(score: int) -> str:
+    for floor, level in _RISK_LEVELS:
+        if score >= floor:
+            return level
+    return "none"
+
+
+def _is_scan_probe(alert: Alert, scans: list[Alert]) -> bool:
+    if alert.rule_id not in _PROBE_RULES or alert.dst_port is None:
+        return False
+    for scan in scans:
+        evidence = scan.evidence
+        if (
+            alert.dst_port in evidence.get("sample_ports", ())
+            and (scan.dst == alert.dst or alert.dst in evidence.get("sample_hosts", ()))
+            and scan.ts - evidence.get("window_seconds", 0) <= alert.ts <= scan.last_seen
+        ):
+            return True
+    return False
 
 
 @dataclass
@@ -55,11 +106,84 @@ class Cluster:
     def max_severity(self) -> str:
         return max(self.alerts, key=lambda a: a.severity.rank).severity.value
 
+    def _phased(self) -> list[tuple[Alert, str]]:
+        """Each alert paired with the attack phase it represents here."""
+        scans = [a for a in self.alerts if a.rule_id == "port_scan"]
+        return [
+            (
+                alert,
+                RULE_PHASE["port_scan"]
+                if _is_scan_probe(alert, scans)
+                else RULE_PHASE.get(alert.rule_id, alert.rule_id),
+            )
+            for alert in self.alerts
+        ]
+
+    @property
+    def phases(self) -> list[dict]:
+        """Distinct phases in order: first seen, then kill-chain stage."""
+        grouped: dict[str, list[Alert]] = defaultdict(list)
+        for alert, phase in self._phased():
+            grouped[phase].append(alert)
+        ordered = sorted(
+            grouped.items(),
+            key=lambda item: (
+                min(a.ts for a in item[1]),
+                _PHASE_STAGE.get(item[0], len(_PHASE_STAGE)),
+            ),
+        )
+        return [
+            {
+                "phase": phase,
+                "rules": sorted({a.rule_id for a in items}),
+                "first_seen": min(a.ts for a in items),
+                "last_seen": max(a.last_seen for a in items),
+                "alert_ids": [a.id for a in sorted(items, key=lambda a: a.ts)],
+            }
+            for phase, items in ordered
+        ]
+
     @property
     def chain(self) -> str:
         """Human-readable attack-chain label, e.g.
         'reconnaissance -> suspicious service access'."""
-        return " -> ".join(RULE_PHASE.get(rule, rule) for rule in self.rules)
+        return " -> ".join(p["phase"] for p in self.phases)
+
+    @property
+    def risk(self) -> dict:
+        """0-100 priority score with the factors that produced it. Alerts an
+        analyst closed as benign don't count; a confirmed one adds weight."""
+        phased = [(a, phase) for a, phase in self._phased() if a.status not in _BENIGN_VERDICTS]
+        live = [a for a, _ in phased]
+        if not live:
+            return {
+                "score": 0,
+                "level": "none",
+                "factors": [{"factor": "every alert closed as benign by an analyst", "points": 0}],
+            }
+        peak = max(live, key=lambda a: (a.severity.rank, a.confidence))
+        factors = [
+            {
+                "factor": f"peak severity {peak.severity.value}",
+                "points": _SEVERITY_POINTS[peak.severity.value],
+            },
+            {
+                "factor": f"evidence confidence {peak.confidence:.2f}",
+                "points": round(10 * peak.confidence),
+            },
+        ]
+        phases = len({phase for _, phase in phased})
+        if phases > 1:
+            factors.append(
+                {
+                    "factor": f"multi-stage activity ({phases} phases)",
+                    "points": min(20, 10 * (phases - 1)),
+                }
+            )
+        if any(a.status == AlertStatus.CONFIRMED for a in live):
+            factors.append({"factor": "analyst-confirmed alert", "points": 10})
+        score = min(100, sum(f["points"] for f in factors))
+        return {"score": score, "level": risk_level(score), "factors": factors}
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +193,8 @@ class Cluster:
             "targets": self.targets,
             "rules": self.rules,
             "chain": self.chain,
+            "phases": self.phases,
+            "risk": self.risk,
             "max_severity": self.max_severity,
             "alert_ids": [a.id for a in self.alerts],
             "alert_count": len(self.alerts),
@@ -96,6 +222,15 @@ def correlate(alerts: list[Alert]) -> list[Cluster]:
         reverse=True,
     )
     return clusters
+
+
+def case_risk(clusters: list[Cluster]) -> dict:
+    """A case is as risky as its riskiest cluster; reported with that
+    cluster's source and factors so the number is never unexplained."""
+    if not clusters:
+        return {"score": 0, "level": "none", "source": None, "factors": []}
+    top = max(clusters, key=lambda c: c.risk["score"])
+    return {**top.risk, "source": top.source}
 
 
 def related_alerts(store, alert: Alert, limit: int = 10) -> list[Alert]:
@@ -139,6 +274,12 @@ def investigation_hint(alert: Alert) -> str:
         "signature": (
             f"Review the matched packet and the signature's note, then widen: "
             f"sentryd alerts list{case} --rule signature"
+        ),
+        "beacon": (
+            f"Pull the periodic flow and its payload sizes: tshark -r <pcap> "
+            f"-Y 'ip.addr == {dst} && {(alert.protocol or 'tcp')}.port == {alert.dst_port}' "
+            f"-z conv,ip; check {dst}'s reputation and which process on {src} owns "
+            f"the connection (update checkers and monitoring agents also beacon)"
         ),
     }
     return hints.get(

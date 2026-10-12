@@ -37,8 +37,11 @@ organized into cases, with AI triage as an optional post-hoc annotator.
   `(rule_id, src, dst, key)` within a cooldown (event time, not wall clock),
   keeps `last_ts` current, dispatches to `AlertSink`s (protocol:
   `emit(alert)` / `update(alert)`).
-- `core/correlate.py`, deterministic clustering of case alerts by source with
-  attack-chain labels, plus `related_alerts` and `investigation_hint`.
+- `core/correlate.py`, deterministic clustering of case alerts by source.
+  Clusters expose kill-chain `phases` (scan probes fold into
+  reconnaissance; ties break by stage) and an explainable `risk` score
+  built from named additive factors; `case_risk` takes the riskiest
+  cluster. Also `related_alerts` and `investigation_hint`.
 - `runner.py`, `run_case()` / `create_pending_case()`: shared case
   orchestration for CLI and web (creates the case, stamps alerts with
   case_id, writes progress, finalizes status/span). Web runs it in a thread.
@@ -52,7 +55,10 @@ organized into cases, with AI triage as an optional post-hoc annotator.
   digest, `review.py` orchestrates and persists the overall review.
 - `storage/store.py`, SQLite via stdlib `sqlite3`, no ORM. `AlertStore` is
   the alert+case repository and an engine sink; `_migrate()` adds missing
-  columns in place so old databases keep working.
+  columns in place so old databases keep working. WAL mode; the schema
+  pass only runs when `PRAGMA user_version` is behind `SCHEMA_VERSION`
+  (bump it whenever the schema, triggers or migrations change). Triggers
+  keep a `meta.revision` counter that moves on every alert/case write.
 - `export.py`, JSON/CSV alert exports and case markdown/JSON reports.
 - `config.py`, packaged defaults (`data/default_config.yaml`) deep-merged
   with the user file (`./config/signatures.yaml` or `--config`); `_validate`
@@ -60,7 +66,13 @@ organized into cases, with AI triage as an optional post-hoc annotator.
 - `cli.py`, Typer entrypoint (`sentryd`): replay/sniff/tail, alerts, cases,
   triage, export, rules, dash, web.
 - `web/api.py`, FastAPI REST API + static SPA (`web/static/`). OpenAPI at
-  `/docs`. AI endpoints return 503 when no provider is configured.
+  `/docs`. AI endpoints return 503 when no provider is configured. Data
+  GETs are revalidated against the store revision (ETag/304);
+  `/api/revision` and `/api/dashboard` serve the console's live loop.
+- `web/static/`, the console: `app.js` (entry: router, keyboard, live
+  loop) plus ES modules in `js/` (`api` auth-aware fetch, `live` revision
+  polling, `ui` primitives, `charts`, `table`, `details` drawers,
+  `palette`, and one module per view). No build step, no dependencies.
 
 ## Conventions
 
@@ -86,6 +98,9 @@ organized into cases, with AI triage as an optional post-hoc annotator.
 - **AI sees only bounded, structured metadata**, never raw packets, and only
   when the user explicitly runs triage/review. Case reviews go through
   `triage/digest.py` (hard size cap); keep it that way.
+- **Console code escapes server data** with `esc()` before it reaches
+  `innerHTML` (or uses `textContent`); charts follow the reference palette
+  and mark specs in `style.css`, and severity is never color alone.
 - **Every run is a case.** New code that produces alerts should attach them
   to a case via the runner rather than writing to the store directly.
 - Prose style for repo files: no em dashes, and no AI-assistant references

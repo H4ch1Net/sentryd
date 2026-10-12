@@ -105,3 +105,57 @@ def test_sources_tracked_independently():
     # Two sources each probe 10 ports, 20 total, but neither crosses 15.
     events = scan_events(10, src="10.0.0.1") + scan_events(10, src="10.0.0.2")
     assert run_events(rule, events) == []
+
+
+# -- stealth techniques ----------------------------------------------------------
+
+
+def stealth_events(n_ports, flags, start=100.0, interval=0.1):
+    return [
+        make_event(ts=start + i * interval, src_ip="10.0.0.66", dst_ip="10.0.0.9",
+                   dst_port=1000 + i, tcp_flags=flags)
+        for i in range(n_ports)
+    ]
+
+
+def test_fin_scan_detected_and_named():
+    alerts = run_events(PortScanRule(), stealth_events(20, "F"))
+
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert.title.startswith("Stealth FIN port scan: 10.0.0.66")
+    assert alert.evidence["techniques"] == {"fin": 15}
+    assert alert.evidence["syn_only_attempts"] == 0
+    assert "stealth probes (15 FIN)" in alert.reason
+    assert alert.confidence >= 0.85  # no benign explanation for FIN without ACK
+
+
+def test_xmas_scan_detected():
+    alerts = run_events(PortScanRule(), stealth_events(20, "FPU"))
+    assert len(alerts) == 1
+    assert alerts[0].title.startswith("Stealth XMAS port scan")
+    assert alerts[0].evidence["techniques"] == {"xmas": 15}
+
+
+def test_mixed_techniques_count_together():
+    events = stealth_events(8, "S") + stealth_events(8, "F", start=101.0)
+    for i, event in enumerate(events[8:]):  # distinct ports for the FIN half
+        events[8 + i] = make_event(ts=event.ts, src_ip="10.0.0.66", dst_ip="10.0.0.9",
+                                   dst_port=2000 + i, tcp_flags="F")
+    alerts = run_events(PortScanRule(), events)
+    assert len(alerts) == 1
+    assert alerts[0].evidence["techniques"] == {"fin": 7, "syn": 8}
+    assert alerts[0].title.startswith("Stealth FIN port scan")
+
+
+def test_resets_null_and_teardown_segments_are_not_probes():
+    rule = PortScanRule()
+    for flags in ("R", "RA", "", "FA", "PA", "U"):
+        assert run_events(rule, stealth_events(30, flags)) == [], flags
+
+
+def test_syn_scan_title_and_reason_unchanged():
+    alert = run_events(PortScanRule(), scan_events(20))[0]
+    assert alert.title.startswith("Port scan: 10.0.0.66 probed")
+    assert "bare SYNs" in alert.reason
+    assert alert.evidence["techniques"] == {"syn": 15}

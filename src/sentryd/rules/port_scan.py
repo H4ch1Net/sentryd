@@ -1,10 +1,12 @@
 """Port scan detection: many distinct target ports from one source, fast.
 
-Tracks bare connection attempts (TCP SYN without ACK) per source IP in a
-sliding time window. Both SYN (half-open) scans and full connect scans open
-with a lone SYN, so counting distinct (host, port) targets catches both; the
-alert distinguishes vertical scans (one host, many ports) from horizontal
-sweeps (one port, many hosts).
+Tracks scan probes per source IP in a sliding time window and alerts on the
+number of distinct (host, port) targets. Both SYN (half-open) scans and full
+connect scans open with a lone SYN; stealth FIN and XMAS scans (nmap -sF /
+-sX) send segments that cannot belong to any connection, since after the
+handshake every segment carries ACK. All of them count, and the alert names
+the technique and distinguishes vertical scans (one host, many ports) from
+horizontal sweeps (one port, many hosts).
 """
 
 from __future__ import annotations
@@ -17,34 +19,56 @@ from sentryd.core.events import Event
 from sentryd.rules.base import Rule, register
 
 
+def probe_technique(flags: str) -> str | None:
+    """Classify a TCP segment as a scan probe by its flags, or None.
+
+    Flagless (NULL) probes are deliberately not counted: log sources that
+    omit tcp_flags would be indistinguishable from them.
+    """
+    if "A" in flags:
+        return None
+    if "S" in flags:
+        return "syn"
+    if "R" in flags or "F" not in flags:
+        return None
+    return "xmas" if "P" in flags and "U" in flags else "fin"
+
+
 @dataclass
 class _SourceWindow:
-    """Sliding window of one source's connection attempts.
+    """Sliding window of one source's scan probes.
 
-    Distinct-target counts are maintained incrementally (Counter updated on
-    append/expiry) so processing stays O(1) per packet instead of rebuilding
-    a set from the whole window on every SYN.
+    Distinct-target and per-technique counts are maintained incrementally
+    (Counters updated on append/expiry) so processing stays O(1) per packet
+    instead of rebuilding a set from the whole window on every probe.
     """
 
-    attempts: deque[tuple[float, str, int]] = field(default_factory=deque)
+    attempts: deque[tuple[float, str, int, str]] = field(default_factory=deque)
     targets: Counter = field(default_factory=Counter)  # (dst_ip, dst_port) -> hits
+    techniques: Counter = field(default_factory=Counter)  # "syn" | "fin" | "xmas" -> hits
 
-    def add(self, ts: float, dst: str, port: int) -> None:
-        self.attempts.append((ts, dst, port))
+    def add(self, ts: float, dst: str, port: int, technique: str) -> None:
+        self.attempts.append((ts, dst, port, technique))
         self.targets[(dst, port)] += 1
+        self.techniques[technique] += 1
 
     def expire_before(self, cutoff: float) -> None:
         while self.attempts and self.attempts[0][0] < cutoff:
-            _, dst, port = self.attempts.popleft()
-            remaining = self.targets[(dst, port)] - 1
-            if remaining:
-                self.targets[(dst, port)] = remaining
-            else:
-                del self.targets[(dst, port)]
+            _, dst, port, technique = self.attempts.popleft()
+            _decrement(self.targets, (dst, port))
+            _decrement(self.techniques, technique)
 
     @property
     def newest_ts(self) -> float | None:
         return self.attempts[-1][0] if self.attempts else None
+
+
+def _decrement(counter: Counter, key) -> None:
+    remaining = counter[key] - 1
+    if remaining:
+        counter[key] = remaining
+    else:
+        del counter[key]
 
 
 @register
@@ -68,11 +92,13 @@ class PortScanRule(Rule):
     def process(self, event: Event) -> list[Alert]:
         if (
             event.protocol != "tcp"
-            or not event.is_syn_only
             or event.src_ip is None
             or event.dst_ip is None
             or event.dst_port is None
         ):
+            return []
+        technique = probe_technique(event.tcp_flags)
+        if technique is None:
             return []
 
         self._maybe_sweep(event.ts)
@@ -80,7 +106,7 @@ class PortScanRule(Rule):
         window = self._windows.get(event.src_ip)
         if window is None:
             window = self._windows[event.src_ip] = _SourceWindow()
-        window.add(event.ts, event.dst_ip, event.dst_port)
+        window.add(event.ts, event.dst_ip, event.dst_port, technique)
         window.expire_before(event.ts - self.window_seconds)
 
         if len(window.targets) < self.min_distinct_targets:
@@ -100,26 +126,41 @@ class PortScanRule(Rule):
         ports = sorted({port for _, port in window.targets})
         span = round(window.attempts[-1][0] - window.attempts[0][0], 3)
         distinct = len(window.targets)
+        techniques = dict(sorted(window.techniques.items()))
+        stealth = sorted(t for t in techniques if t != "syn")
+        if stealth:
+            label = stealth[0].upper() if len(stealth) == 1 else "mixed"
+            scan_noun, sweep_noun = f"Stealth {label} port scan", f"Stealth {label} port sweep"
+            probes = "stealth probes (" + ", ".join(
+                f"{n} {t.upper()}" for t, n in techniques.items()
+            ) + ")"
+        else:
+            scan_noun, sweep_noun = "Port scan", "Port sweep"
+            probes = "bare SYNs"
 
         if victim is not None:
             kind = "vertical"
-            title = f"Port scan: {event.src_ip} probed {len(ports)} ports on {victim}"
+            title = f"{scan_noun}: {event.src_ip} probed {len(ports)} ports on {victim}"
         elif len(ports) <= 3:
             kind = "horizontal"
             title = (
-                f"Port sweep: {event.src_ip} probed port(s) "
+                f"{sweep_noun}: {event.src_ip} probed port(s) "
                 f"{', '.join(map(str, ports))} across {len(hosts)} hosts"
             )
         else:
             kind = "mixed"
             title = (
-                f"Port scan: {event.src_ip} probed {distinct} host/port "
+                f"{scan_noun}: {event.src_ip} probed {distinct} host/port "
                 f"combinations across {len(hosts)} hosts"
             )
 
-        # Confidence grows with how far past the threshold the burst is.
+        # Confidence grows with how far past the threshold the burst is;
+        # stealth probes have no benign explanation, so they start higher.
         overshoot = distinct / self.min_distinct_targets
-        confidence = round(min(0.95, 0.70 + 0.10 * (overshoot - 1.0)), 2)
+        confidence = min(0.95, 0.70 + 0.10 * (overshoot - 1.0))
+        if stealth:
+            confidence = max(confidence, 0.85)
+        confidence = round(confidence, 2)
 
         return [
             Alert(
@@ -133,7 +174,7 @@ class PortScanRule(Rule):
                 protocol="tcp",
                 packet_count=len(window.attempts),
                 reason=(
-                    f"{distinct} distinct host/port targets probed with bare SYNs "
+                    f"{distinct} distinct host/port targets probed with {probes} "
                     f"within {span:g}s (threshold: {self.min_distinct_targets} "
                     f"in {self.window_seconds:g}s)"
                 ),
@@ -146,7 +187,9 @@ class PortScanRule(Rule):
                     "observed_span_seconds": span,
                     "sample_ports": ports[:25],
                     "sample_hosts": sorted(hosts)[:10],
-                    "syn_only_attempts": len(window.attempts),
+                    "techniques": techniques,
+                    "syn_only_attempts": techniques.get("syn", 0),
+                    "probe_attempts": len(window.attempts),
                 },
             )
         ]

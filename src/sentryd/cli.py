@@ -386,12 +386,9 @@ app.add_typer(rules_app, name="rules")
 
 
 def _rule_doc(rule_id: str) -> str:
-    import sys
+    from sentryd.rules.base import rule_doc
 
-    from sentryd.rules.base import RULE_REGISTRY
-
-    cls = RULE_REGISTRY[rule_id]
-    return (sys.modules[cls.__module__].__doc__ or "").strip()
+    return rule_doc(rule_id)
 
 
 def _enabled_cell(config_enabled: bool, disabled: bool) -> str:
@@ -728,7 +725,7 @@ def cases_show(
                 f"[{sev_style}]{cluster.max_severity:<8}[/{sev_style}] "
                 f"[bold]{cluster.source}[/bold] -> {targets}\n"
                 f"         {cluster.chain}  "
-                f"[dim]({len(cluster.alerts)} alerts, "
+                f"[dim](risk {cluster.risk['score']}/100, {len(cluster.alerts)} alerts, "
                 f"{fmt_ts_utc(cluster.first_seen, date=False)} to "
                 f"{fmt_ts_utc(cluster.last_seen, date=False)} UTC)[/dim]"
             )

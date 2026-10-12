@@ -26,6 +26,17 @@ rules:
     gratuitous_threshold: 8   # gratuitous announcements per window before flagging
     mapping_ttl_seconds: 3600 # IP-to-MAC mappings expire like a real ARP cache
 
+  beacon:
+    enabled: true
+    min_contacts: 6          # check-ins needed before a rhythm counts
+    max_jitter: 0.15         # max interval variation (stdev / mean), ~±25% uniform jitter
+    min_interval_seconds: 5  # faster than this is streaming, not beaconing
+    max_interval_seconds: 3600
+    burst_seconds: 1.0       # packets this close together are one contact
+    history: 20              # most recent contacts the rhythm is judged on
+    # Periodic by design: DNS, DHCP, NTP, NetBIOS, SNMP, syslog, SSDP, mDNS, LLMNR.
+    ignore_ports: [53, 67, 68, 123, 137, 138, 161, 162, 514, 1900, 5353, 5355]
+
   suspicious_port:
     enabled: true
     ports:
